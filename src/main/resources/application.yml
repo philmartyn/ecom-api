@@ -15,6 +15,9 @@ spring:
           time_zone: UTC
   flyway:
     enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
 server:
   port: 8080
 management:
