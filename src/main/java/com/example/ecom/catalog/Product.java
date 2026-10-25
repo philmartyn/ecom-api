@@ -95,4 +95,9 @@ public class Product  extends AuditableEntity {
     public boolean isActive() {
         return active;
     }
+
+    /** Soft delete: catalog history keeps referencing this row, so it is never removed. */
+    public void deactivate() {
+        this.active = false;
+    }
 }
