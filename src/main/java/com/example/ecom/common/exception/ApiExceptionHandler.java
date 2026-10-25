@@ -50,6 +50,12 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Email already registered", ex.getMessage(), request);
     }
 
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ProblemDetail onInvalidCredentials(InvalidCredentialsException ex,
+                                             HttpServletRequest request) {
+        return problem(HttpStatus.UNAUTHORIZED, "Invalid credentials", ex.getMessage(), request);
+    }
+
     /**
      * Backstop for the race the service's existsByEmail check cannot win: two
      * concurrent registrations both pass the check, and the unique index rejects

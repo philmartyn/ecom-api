@@ -2,6 +2,7 @@ package com.example.ecom.auth;
 
 import com.example.ecom.common.exception.ApiExceptionHandler;
 import com.example.ecom.common.exception.EmailAlreadyUsedException;
+import com.example.ecom.common.exception.InvalidCredentialsException;
 import com.example.ecom.user.Role;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +19,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -34,6 +36,10 @@ class AuthControllerTest {
     private static final String VALID_BODY = """
             {"email":"bob@example.com","password":"correct-horse-battery",
              "firstName":"Bob","lastName":"Smith"}
+            """;
+
+    private static final String LOGIN_BODY = """
+            {"email":"bob@example.com","password":"correct-horse-battery"}
             """;
 
     @Autowired
@@ -96,5 +102,44 @@ class AuthControllerTest {
                         .contentType(MediaType.TEXT_PLAIN)
                         .content("not json"))
                 .andExpect(status().isUnsupportedMediaType());
+    }
+
+    @Test
+    void loginReturns200WithATokenAndNoCacheDirective() throws Exception {
+        given(authService.login(any()))
+                .willReturn(new LoginResponse("signed.jwt.value", "Bearer", 900));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(LOGIN_BODY))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.accessToken").value("signed.jwt.value"))
+                .andExpect(jsonPath("$.tokenType").value("Bearer"))
+                .andExpect(jsonPath("$.expiresIn").value(900))
+                .andExpect(jsonPath("$.passwordHash").doesNotExist());
+    }
+
+    @Test
+    void loginReturns401WithoutSayingWhichHalfWasWrong() throws Exception {
+        willThrow(new InvalidCredentialsException()).given(authService).login(any());
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(LOGIN_BODY))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Invalid credentials"))
+                .andExpect(jsonPath("$.detail").value("Email or password is incorrect"));
+    }
+
+    @Test
+    void loginReturns400WhenThePasswordIsMissing() throws Exception {
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email":"bob@example.com"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.password").exists());
     }
 }
