@@ -8,9 +8,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Read-only token: the job only checks out code and runs Gradle.
+# contents: read for the checkout. checks: write so the test report can be
+# attached to the commit as a check run with inline annotations.
 permissions:
   contents: read
+  checks: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,50 +46,24 @@ jobs:
       - name: Run tests
         run: ./gradlew test --console=plain
 
-      # Without this the only view of a failure is the raw Gradle log or a
-      # downloaded artifact. Content written to $GITHUB_STEP_SUMMARY renders as
-      # markdown at the top of the run page - the closest Actions gets to a test
-      # report without a third-party action.
-      - name: Summarise test failures
-        if: failure()
-        run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import glob
-          import xml.etree.ElementTree as ET
+      # Publishes the JUnit XML as a check run: pass/fail counts, one entry per
+      # failed test, and annotations on the failing lines. It also writes the job
+      # summary (job_summary defaults to true), so there is nothing to parse by hand.
+      # Runs on failure as well as success; the Gradle step has already decided
+      # the job's outcome, so this must not mask it.
+      - name: Publish test report
+        if: success() || failure()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: '**/build/test-results/test/TEST-*.xml'
+          check_name: Test report
+          detailed_summary: true
+          # A green run has nothing to summarise beyond the check itself; the
+          # failure table is what earns the space.
+          skip_success_summary: true
 
-          rows = []
-          total = 0
-
-          for path in sorted(glob.glob("build/test-results/test/*.xml")):
-              try:
-                  suite = ET.parse(path).getroot()
-              except ET.ParseError:
-                  continue
-              total += int(suite.get("tests", 0))
-              for case in suite.iter("testcase"):
-                  for failure in case.findall("failure") + case.findall("error"):
-                      text = (failure.get("message") or failure.text or "").strip()
-                      lines = text.splitlines()
-                      message = (lines[0] if lines else "(no message)")[:180]
-                      message = message.replace("|", "\\|")
-                      cls = (case.get("classname") or "").split(".")[-1]
-                      rows.append(f"| `{cls}` | `{case.get('name')}` | {message} |")
-
-          print("## Test failures\n")
-          if rows:
-              print(f"**{len(rows)} failed** out of {total} tests run.\n")
-              print("| Class | Test | Failure |")
-              print("| --- | --- | --- |")
-              print("\n".join(rows))
-          elif total:
-              print(f"All {total} tests passed, so the failure is elsewhere in the build.")
-          else:
-              print("No test results found - the build failed before the tests ran.")
-          print("\nFull report: the `test-reports` artifact below.")
-          PY
-
-      # Test XML and HTML are only useful when something failed, and uploading
-      # them on success just burns storage.
+      # The check run has the per-test detail; the HTML report is still handy
+      # when you want to read a full stack trace, so keep it for failures only.
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7
