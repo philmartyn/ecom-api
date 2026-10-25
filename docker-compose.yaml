@@ -9,8 +9,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    networks:
-      - app_network
+#    networks:
+#      - app_network
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-ecom} -d ${POSTGRES_DB:-ecom}']
       interval: 5s
@@ -103,9 +103,9 @@ services:
 #      - app_network
 #    restart: unless-stopped
 
-networks:
-  app_network:
-    driver: bridge
+#networks:
+#  app_network:
+#    driver: bridge
 
 volumes:
   pgdata:

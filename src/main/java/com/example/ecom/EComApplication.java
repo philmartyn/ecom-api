@@ -1,13 +1,13 @@
-package com.example.ecomproject;
+package com.example.ecom;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class EComProjectApplication {
+public class EComApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(EComProjectApplication.class, args);
+        SpringApplication.run(EComApplication.class, args);
     }
 
 }
