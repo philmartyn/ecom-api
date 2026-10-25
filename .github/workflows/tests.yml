@@ -1,0 +1,99 @@
+name: Tests
+
+# Every push, on any branch, plus pull requests. A push that already has an open
+# PR would otherwise run twice, which is why the concurrency group below cancels
+# the older run instead of queueing it.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Read-only token: the job only checks out code and runs Gradle.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Gradle test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # The build pins Java 27 through a Gradle toolchain; installing it here
+      # means the toolchain resolves without Gradle downloading a JDK itself.
+      - name: Set up JDK 27
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '27'
+
+      # Handles the Gradle cache, the wrapper download and the daemon lifecycle.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # The tests start PostgreSQL with Testcontainers rather than a service
+      # container, so they get exactly the image the project uses locally.
+      # GitHub's ubuntu runners ship with Docker, which is all Testcontainers needs.
+      - name: Run tests
+        run: ./gradlew test --console=plain
+
+      # Without this the only view of a failure is the raw Gradle log or a
+      # downloaded artifact. Content written to $GITHUB_STEP_SUMMARY renders as
+      # markdown at the top of the run page - the closest Actions gets to a test
+      # report without a third-party action.
+      - name: Summarise test failures
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob
+          import xml.etree.ElementTree as ET
+
+          rows = []
+          total = 0
+
+          for path in sorted(glob.glob("build/test-results/test/*.xml")):
+              try:
+                  suite = ET.parse(path).getroot()
+              except ET.ParseError:
+                  continue
+              total += int(suite.get("tests", 0))
+              for case in suite.iter("testcase"):
+                  for failure in case.findall("failure") + case.findall("error"):
+                      text = (failure.get("message") or failure.text or "").strip()
+                      lines = text.splitlines()
+                      message = (lines[0] if lines else "(no message)")[:180]
+                      message = message.replace("|", "\\|")
+                      cls = (case.get("classname") or "").split(".")[-1]
+                      rows.append(f"| `{cls}` | `{case.get('name')}` | {message} |")
+
+          print("## Test failures\n")
+          if rows:
+              print(f"**{len(rows)} failed** out of {total} tests run.\n")
+              print("| Class | Test | Failure |")
+              print("| --- | --- | --- |")
+              print("\n".join(rows))
+          elif total:
+              print(f"All {total} tests passed, so the failure is elsewhere in the build.")
+          else:
+              print("No test results found - the build failed before the tests ran.")
+          print("\nFull report: the `test-reports` artifact below.")
+          PY
+
+      # Test XML and HTML are only useful when something failed, and uploading
+      # them on success just burns storage.
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+          retention-days: 7
