@@ -26,7 +26,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Web-layer slice: the controller, Jackson and the exception advice are real,
  * the service is a mock. Security filters are disabled because SecurityConfig
- * is not part of the slice - its behaviour gets its own test in step 2d.
+ * is not part of the slice - its behaviour is covered by SecurityPerimeterTest.
  */
 @WebMvcTest(AuthController.class)
 @AutoConfigureMockMvc(addFilters = false)

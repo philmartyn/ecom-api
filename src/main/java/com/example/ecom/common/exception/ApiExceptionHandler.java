@@ -56,6 +56,13 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.UNAUTHORIZED, "Invalid credentials", ex.getMessage(), request);
     }
 
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ProblemDetail onUserNotFound(UserNotFoundException ex,
+                                        HttpServletRequest request) {
+        return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", "Authentication is required", request);
+    }
+
     /**
      * Backstop for the race the service's existsByEmail check cannot win: two
      * concurrent registrations both pass the check, and the unique index rejects

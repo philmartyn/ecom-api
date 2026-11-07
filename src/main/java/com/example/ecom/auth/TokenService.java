@@ -14,6 +14,7 @@ import java.util.UUID;
 @Service
 public class TokenService {
 
+    static final String ROLE_CLAIM = "role";
     private final JwtEncoder jwtEncoder;
     private final JwtProperties properties;
 
@@ -33,7 +34,7 @@ public class TokenService {
                 .expiresAt(expiresAt)
                 .id(UUID.randomUUID().toString())
                 .claim("email", user.getEmail())
-                .claim("role", user.getRole().name())
+                .claim(TokenService.ROLE_CLAIM, user.getRole().name())
                 .build();
 
         JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();

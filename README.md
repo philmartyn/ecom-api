@@ -20,11 +20,12 @@ each slice is finished — with tests — before the next one starts.
 | Dev seed data | done |
 | Registration (`POST /api/auth/register`) | done |
 | Login issuing HS256 JWTs (`POST /api/auth/login`) | done |
-| Token validation on incoming requests | **not started** |
+| Token validation on incoming requests | done |
 | Product, cart, order and payment endpoints | **not started** |
 
-The API is currently **open**: `SecurityConfig` permits every request. Login
-issues tokens that nothing verifies yet. That changes in the next slice.
+Every route except registration, login, health/info and the API docs now requires
+`Authorization: Bearer <token>`. The public list and the 401/403 contract are
+under [Endpoints](#endpoints).
 
 ## Stack
 
@@ -42,7 +43,9 @@ issues tokens that nothing verifies yet. That changes in the next slice.
 Boot 4 and Java 27 are newer than almost every tutorial you will find. Boot 4
 split the test starters and moved annotations (`@WebMvcTest` now lives in
 `org.springframework.boot.webmvc.test.autoconfigure`, `@MockBean` became
-`@MockitoBean`). Where a version difference matters, the code comments say so.
+`@MockitoBean`), and it ships **Jackson 3** — the error handlers inject
+`tools.jackson.databind.ObjectMapper`, not the Jackson 2 type. Where a version
+difference matters, the code comments say so.
 
 ## Running it
 
@@ -149,6 +152,40 @@ take about the same time. Anything else is an account-enumeration oracle:
   "detail": "Email or password is incorrect", "instance": "/api/auth/login" }
 ```
 
+### `GET /api/auth/me`
+
+Requires `Authorization: Bearer <accessToken>`.
+
+`200 OK` with `Cache-Control: no-store` and the same profile body registration
+returns:
+
+```json
+{ "id": 1, "email": "bob@example.com", "firstName": "Bob", "lastName": "Smith",
+  "role": "CUSTOMER", "createdAt": "2026-10-25T17:15:47.783115Z" }
+```
+
+The token's `sub` identifies the user, but the row is read from the database, so
+the profile is current rather than a stale copy of the claims. If that user no
+longer exists the response is `401`, not `404` — a valid token naming nobody is
+not an authenticated caller.
+
+### Protecting routes
+
+Only these are public:
+
+| Route | Why |
+|---|---|
+| `POST /api/auth/register` | there is no token yet |
+| `POST /api/auth/login` | issues the token |
+| `GET /actuator/health`, `GET /actuator/info` | operational probes |
+| `GET /v3/api-docs/**`, `/swagger-ui/**`, `/swagger-ui.html` | API docs |
+
+Everything else is `authenticated()`. A missing or invalid token gets `401`
+problem+json with a `WWW-Authenticate: Bearer` header; an authenticated caller
+who is not allowed gets `403` problem+json. The two are deliberately distinct:
+401 means *authenticate*, 403 means *you are authenticated but not allowed*.
+Errors are generic so a caller cannot tell a forged token from an expired one.
+
 ### Errors
 
 All errors are RFC 9457 `application/problem+json`:
@@ -192,12 +229,13 @@ Package by feature, not by layer:
 
 ```
 com.example.ecom
-├── auth/            registration, login, JWT issuing
+├── auth/            registration, login, JWT issuing and verification
 ├── catalog/         Category, Product, repositories
 ├── common/
 │   ├── config/      security, JPA auditing, OpenAPI
 │   ├── domain/      AuditableEntity (created_at / updated_at)
-│   └── exception/   domain exceptions + RFC 9457 advice
+│   ├── exception/   domain exceptions + RFC 9457 advice
+│   └── security/    filter-chain entry point, access-denied handler, problem body
 ├── dev/             local-only data seeder
 └── user/            User, Role, repository
 ```
@@ -209,7 +247,7 @@ what you read is what the compiler sees.
 ## Tests
 
 ```bash
-./gradlew test          # 49 tests, ~20s, needs Docker
+./gradlew test          # 64 tests, ~25s, needs Docker
 ```
 
 The same command runs on GitHub Actions for every push and pull request
@@ -221,8 +259,11 @@ The same command runs on GitHub Actions for every push and pull request
 | unit | `AuthServiceTest` | hashing, duplicate handling, 72-byte rule, credential failures |
 | unit | `TokenServiceTest` | claims, 15-minute lifetime, signature actually verified |
 | slice | `AuthControllerTest` | JSON shape, status codes, problem-detail bodies, no hash leaks |
+| slice | `MeEndpointTest` | `/me` contract: `sub` → service id, `UserResponse` body, `no-store`, no hash |
+| slice | `SecurityPerimeterTest` | public allowlist, 401 vs 403, unknown routes never leak 404 |
 | repository | `UserRepositoryTest`, `CatalogRepositoryTest`, `DevDataSeederTest` | constraints, idempotent seeding |
 | integration | `AuthRegistrationIntegrationTest`, `AuthLoginIntegrationTest` | the whole chain against real PostgreSQL |
+| integration | `TokenValidationIntegrationTest` | valid login token accepted; tampered, expired, wrong-secret, wrong-issuer, unknown-role, bad-subject and deleted-user tokens rejected |
 
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
@@ -235,8 +276,8 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Catalog entities, repositories, seed data
 - [x] Registration with validation and problem-detail errors
 - [x] Login issuing JWTs
-- [ ] **Next:** validate incoming tokens, lock down routes, `GET /api/auth/me`
-- [ ] Product browsing and search endpoints
+- [x] Token validation, route lockdown, `GET /api/auth/me`
+- [ ] **Next:** Product browsing and search endpoints
 - [ ] Cart: add, update quantity, remove
 - [ ] Checkout and orders
 - [ ] Stripe payment integration
@@ -247,8 +288,11 @@ than one per class. Migrations run against it exactly as they do in production.
 
 Deliberate for now, listed so nobody mistakes them for oversights:
 
-- **Every route is public.** Token validation and authorisation rules arrive
-  with the next slice.
+- **Role changes lag up to 15 minutes.** Authorization trusts the token's `role`
+  claim, so a demoted admin keeps the old role until that token expires. `/me`
+  reads the database, but ordinary protected routes do not.
+- **A deleted user's token still works** on routes that trust claims alone; only
+  `/me` rejects it. Worth revisiting when orders exist.
 - **No logout or revocation.** A token is valid until `exp`; the server keeps no
   session. `jti` is there for the day a denylist is worth building.
 - **No refresh tokens.** After 15 minutes the client logs in again.

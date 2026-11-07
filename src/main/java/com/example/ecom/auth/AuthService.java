@@ -3,6 +3,7 @@ package com.example.ecom.auth;
 import com.example.ecom.common.exception.EmailAlreadyUsedException;
 import com.example.ecom.common.exception.InvalidCredentialsException;
 import com.example.ecom.common.exception.InvalidRequestException;
+import com.example.ecom.common.exception.UserNotFoundException;
 import com.example.ecom.user.Role;
 import com.example.ecom.user.User;
 import com.example.ecom.user.UserRepository;
@@ -84,5 +85,12 @@ public class AuthService {
         TokenService.AccessToken token = tokenService.issue(user);
         long expiresIn = Duration.between(Instant.now(), token.expiresAt()).toSeconds();
         return new LoginResponse(token.value(), "Bearer", expiresIn);
+    }
+
+    @Transactional(readOnly = true)
+    public UserResponse currentUser(long userId) {
+        return userRepository.findById(userId)
+                .map(UserResponse::from)
+                .orElseThrow(() -> new UserNotFoundException(userId));
     }
 }

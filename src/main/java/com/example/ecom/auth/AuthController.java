@@ -4,6 +4,8 @@ import jakarta.validation.Valid;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -26,5 +28,15 @@ public class AuthController{
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(authService.login(request));
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<UserResponse> me(@AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt) {
+        // TokenClaimsValidator has already guaranteed a numeric sub.
+        long id = Long.parseLong(jwt.getSubject());
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(authService.currentUser(id));
     }
 }

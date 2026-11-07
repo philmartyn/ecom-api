@@ -1,0 +1,90 @@
+package com.example.ecom.common.config;
+
+import com.example.ecom.AbstractIntegrationTest;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * The security perimeter, exercised through the real filter chain.
+ * <p>
+ * Public routes must stay reachable; everything else must answer {@code 401}
+ * with the API's problem+json error shape and a {@code WWW-Authenticate}
+ * header. The "unknown route" case is deliberate: authorization runs before
+ * request mapping, so an unauthenticated caller must not be able to tell a
+ * protected route from one that does not exist yet.
+ * <p>
+ * A {@code 403} case is not here because no route requires {@code ADMIN} yet.
+ * It arrives with the admin slice, where {@code hasRole("ADMIN")} can be
+ * asserted end to end.
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+class SecurityPerimeterTest extends AbstractIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void leavesRegistrationPublic() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void leavesLoginPublic() throws Exception {
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void leavesHealthAndApiDocsPublic() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void rejectsAProtectedRouteWithoutATokenUsingProblemJson() throws Exception {
+        mockMvc.perform(get("/api/auth/me"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(header().exists("WWW-Authenticate"))
+                .andExpect(jsonPath("$.title").value("Unauthorized"))
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.detail").value("Authentication is required"))
+                .andExpect(jsonPath("$.instance").value("/api/auth/me"));
+    }
+
+    @Test
+    void rejectsAnUnknownRouteBeforeItCanRevealA404() throws Exception {
+        mockMvc.perform(get("/api/orders"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+    }
+
+    @Test
+    void rejectsGarbageInTheAuthorizationHeaderWithTheSameBody() throws Exception {
+        mockMvc.perform(get("/api/auth/me")
+                        .header("Authorization", "Bearer not-a-jwt"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"))
+                .andExpect(jsonPath("$.detail").value("Authentication is required"));
+    }
+}
