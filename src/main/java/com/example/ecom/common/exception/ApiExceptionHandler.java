@@ -56,11 +56,22 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.UNAUTHORIZED, "Invalid credentials", ex.getMessage(), request);
     }
 
-
     @ExceptionHandler(UserNotFoundException.class)
     public ProblemDetail onUserNotFound(UserNotFoundException ex,
                                         HttpServletRequest request) {
         return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", "Authentication is required", request);
+    }
+
+    /**
+     * A catalog lookup that found no active product for the requested slug.
+     * Mapped to 404, not 401: the route is public, so "not found" is the honest
+     * answer. An inactive product is deliberately indistinguishable from a missing
+     * one, or the catalog would leak which products were retired.
+     */
+    @ExceptionHandler(ProductNotFoundException.class)
+    public ProblemDetail onProductNotFound(ProductNotFoundException ex,
+                                           HttpServletRequest request) {
+        return problem(HttpStatus.NOT_FOUND, "Product not found", "Product not found", request);
     }
 
     /**

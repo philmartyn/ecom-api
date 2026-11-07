@@ -21,11 +21,12 @@ each slice is finished — with tests — before the next one starts.
 | Registration (`POST /api/auth/register`) | done |
 | Login issuing HS256 JWTs (`POST /api/auth/login`) | done |
 | Token validation on incoming requests | done |
-| Product, cart, order and payment endpoints | **not started** |
+| Product browsing and search (`GET /api/products`, `GET /api/categories`) | done |
+| Cart, order and payment endpoints | **not started** |
 
-Every route except registration, login, health/info and the API docs now requires
-`Authorization: Bearer <token>`. The public list and the 401/403 contract are
-under [Endpoints](#endpoints).
+Registration, login, health/info, the API docs and the catalog are public; every
+other route requires `Authorization: Bearer <token>`. The public list and the
+401/403 contract are under [Endpoints](#endpoints).
 
 ## Stack
 
@@ -169,6 +170,72 @@ the profile is current rather than a stale copy of the claims. If that user no
 longer exists the response is `401`, not `404` — a valid token naming nobody is
 not an authenticated caller.
 
+### `GET /api/categories`
+
+Public. Every category, ordered by name:
+
+```json
+[ { "id": 1, "slug": "keyboards", "name": "Keyboards",
+    "description": "Mechanical and membrane keyboards" } ]
+```
+
+There is no product count per category. It would be a second query on every
+browse and a number that is stale the moment it is returned.
+
+### `GET /api/products`
+
+Public. A page of **active** products. Retired products are invisible: every
+query starts with `active = true`, so no filter combination can surface one.
+
+| Parameter | Default | Rules |
+|---|---|---|
+| `q` | none | case-insensitive contains match on `name` only |
+| `category` | none | exact category slug; an unknown slug returns an empty page |
+| `page` | `0` | zero-based, must be ≥ 0 |
+| `size` | `20` | 1–100 |
+| `sort` | `name,asc` | field one of `name`, `price`, `createdAt`, direction `asc` or `desc` |
+
+An invalid `page`, `size` or `sort` is a `400`, not a `500` from the ORM. `%`,
+`_` and `\` in `q` are literal, so searching for `%` does not return everything.
+
+The response is an explicit envelope, not Spring's `Page` serialisation:
+
+```json
+{ "items": [ ... ], "page": 0, "size": 20, "totalElements": 10, "totalPages": 1 }
+```
+
+Each item is a **summary**, not the detail shape:
+
+```json
+{ "id": 1, "slug": "mechanical-keyboard", "name": "Mechanical Keyboard",
+  "price": 89.99, "imageUrl": "https://example.com/keyboard.png",
+  "category": { "slug": "keyboards", "name": "Keyboards" },
+  "inStock": true }
+```
+
+The list omits `sku` and the exact `stockQuantity`: the storefront needs "can I
+buy this", not an inventory count. The summary keeps the payload small by
+leaving out descriptions and timestamps.
+
+### `GET /api/products/{slug}`
+
+Public. Lookup is by **slug**, not id — the slug is the public, URL-friendly
+identifier, and `sku` is a warehouse detail. `200 OK` returns the summary fields
+plus the long-form ones:
+
+```json
+{ "id": 1, "slug": "mechanical-keyboard", "name": "Mechanical Keyboard",
+  "price": 89.99, "imageUrl": "https://example.com/keyboard.png",
+  "category": { "slug": "keyboards", "name": "Keyboards" },
+  "inStock": true, "description": "Hot-swappable switches.",
+  "createdAt": "2026-10-25T17:15:47.783115Z",
+  "updatedAt": "2026-10-25T17:15:47.783115Z" }
+```
+
+An unknown slug and an inactive product both return `404` with the same body.
+That is deliberate: distinguishing them would tell the world which products were
+retired.
+
 ### Protecting routes
 
 Only these are public:
@@ -179,6 +246,12 @@ Only these are public:
 | `POST /api/auth/login` | issues the token |
 | `GET /actuator/health`, `GET /actuator/info` | operational probes |
 | `GET /v3/api-docs/**`, `/swagger-ui/**`, `/swagger-ui.html` | API docs |
+| `GET /api/categories` | browsing must work before login |
+| `GET /api/products`, `GET /api/products/{slug}` | public, read-only catalog |
+
+The catalog rules are `GET`-scoped. A `POST /api/products` is not public; it
+falls through to `authenticated()`, which keeps the public surface from growing
+when admin writes arrive.
 
 Everything else is `authenticated()`. A missing or invalid token gets `401`
 problem+json with a `WWW-Authenticate: Bearer` header; an authenticated caller
@@ -230,12 +303,13 @@ Package by feature, not by layer:
 ```
 com.example.ecom
 ├── auth/            registration, login, JWT issuing and verification
-├── catalog/         Category, Product, repositories
+├── catalog/         Category, Product, public browsing and search
 ├── common/
 │   ├── config/      security, JPA auditing, OpenAPI
 │   ├── domain/      AuditableEntity (created_at / updated_at)
 │   ├── exception/   domain exceptions + RFC 9457 advice
-│   └── security/    filter-chain entry point, access-denied handler, problem body
+│   ├── security/    filter-chain entry point, access-denied handler, problem body
+│   └── web/         PageResponse pagination envelope
 ├── dev/             local-only data seeder
 └── user/            User, Role, repository
 ```
@@ -247,7 +321,7 @@ what you read is what the compiler sees.
 ## Tests
 
 ```bash
-./gradlew test          # 64 tests, ~25s, needs Docker
+./gradlew test          # 98 tests, ~25s, needs Docker
 ```
 
 The same command runs on GitHub Actions for every push and pull request
@@ -258,12 +332,15 @@ The same command runs on GitHub Actions for every push and pull request
 | unit | `UserTest`, `ProductTest` | normalisation, role mapping, invariants |
 | unit | `AuthServiceTest` | hashing, duplicate handling, 72-byte rule, credential failures |
 | unit | `TokenServiceTest` | claims, 15-minute lifetime, signature actually verified |
+| unit | `ProductQueryTest` | defaults, bounds, sort whitelist, whitespace normalisation |
 | slice | `AuthControllerTest` | JSON shape, status codes, problem-detail bodies, no hash leaks |
 | slice | `MeEndpointTest` | `/me` contract: `sub` → service id, `UserResponse` body, `no-store`, no hash |
-| slice | `SecurityPerimeterTest` | public allowlist, 401 vs 403, unknown routes never leak 404 |
+| slice | `CatalogControllerTest` | envelope, summary vs detail shape, 400s for bad paging and sort |
+| slice | `SecurityPerimeterTest` | public allowlist (including catalog GETs), 401 vs 403, unknown routes never leak 404 |
 | repository | `UserRepositoryTest`, `CatalogRepositoryTest`, `DevDataSeederTest` | constraints, idempotent seeding |
 | integration | `AuthRegistrationIntegrationTest`, `AuthLoginIntegrationTest` | the whole chain against real PostgreSQL |
 | integration | `TokenValidationIntegrationTest` | valid login token accepted; tampered, expired, wrong-secret, wrong-issuer, unknown-role, bad-subject and deleted-user tokens rejected |
+| integration | `CatalogIntegrationTest` | search escaping, category filter, active-only visibility, paging past the end |
 
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
@@ -277,8 +354,8 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Registration with validation and problem-detail errors
 - [x] Login issuing JWTs
 - [x] Token validation, route lockdown, `GET /api/auth/me`
-- [ ] **Next:** Product browsing and search endpoints
-- [ ] Cart: add, update quantity, remove
+- [x] Product browsing and search (`GET /api/products`, `GET /api/categories`)
+- [ ] **Next:** Cart: add, update quantity, remove
 - [ ] Checkout and orders
 - [ ] Stripe payment integration
 - [ ] Admin: products, pricing, inventory
@@ -298,5 +375,12 @@ Deliberate for now, listed so nobody mistakes them for oversights:
 - **No refresh tokens.** After 15 minutes the client logs in again.
 - **No rate limiting.** Login runs BCrypt on demand, which is a brute-force and
   CPU-exhaustion target in the open.
+- **No full-text search.** `q` is a `LIKE '%…%'` on `name`, which cannot use a
+  B-tree index and does not search descriptions. Fine at seed-data scale;
+  PostgreSQL `pg_trgm` is the next step if the catalog grows.
+- **No price, stock or attribute filters.** The contract supports `q` and
+  `category` only; adding filters means new query parameters and tests.
+- **No catalog caching.** Every browse hits the database. Adding a cache now
+  would hide the query and N+1 behaviour this project is meant to teach.
 - **No CORS configuration.** Irrelevant until a browser client exists.
 - **No README before this one** — the project grew faster than its docs.

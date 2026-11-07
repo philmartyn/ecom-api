@@ -22,7 +22,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * with the API's problem+json error shape and a {@code WWW-Authenticate}
  * header. The "unknown route" case is deliberate: authorization runs before
  * request mapping, so an unauthenticated caller must not be able to tell a
- * protected route from one that does not exist yet.
+ * protected route from one that does not exist yet. Catalog reads are public,
+ * which is why an unknown <em>product</em> answers {@code 404} without a token
+ * while an unknown <em>top-level</em> route still answers {@code 401}.
  * <p>
  * A {@code 403} case is not here because no route requires {@code ADMIN} yet.
  * It arrives with the admin slice, where {@code hasRole("ADMIN")} can be
@@ -58,6 +60,23 @@ class SecurityPerimeterTest extends AbstractIntegrationTest {
 
         mockMvc.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void leavesTheCatalogPublic() throws Exception {
+        mockMvc.perform(get("/api/categories"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/products"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void leavesAProductDetailPublicEvenWhenTheSlugIsUnknown() throws Exception {
+        mockMvc.perform(get("/api/products/does-not-exist"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(jsonPath("$.title").value("Product not found"));
     }
 
     @Test
