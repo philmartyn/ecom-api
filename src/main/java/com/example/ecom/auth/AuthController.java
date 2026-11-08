@@ -12,9 +12,11 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/auth")
 public class AuthController{
     private final AuthService authService;
+    private final CurrentUserProvider currentUserProvider;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, CurrentUserProvider currentUserProvider) {
         this.authService = authService;
+        this.currentUserProvider = currentUserProvider;
     }
 
     @PostMapping("/register")
@@ -32,8 +34,7 @@ public class AuthController{
 
     @GetMapping("/me")
     public ResponseEntity<UserResponse> me(@AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt) {
-        // TokenClaimsValidator has already guaranteed a numeric sub.
-        long id = Long.parseLong(jwt.getSubject());
+        long id = currentUserProvider.currentUserId(jwt);
 
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())

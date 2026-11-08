@@ -10,6 +10,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.net.URI;
 import java.util.LinkedHashMap;
@@ -72,6 +73,37 @@ public class ApiExceptionHandler {
     public ProblemDetail onProductNotFound(ProductNotFoundException ex,
                                            HttpServletRequest request) {
         return problem(HttpStatus.NOT_FOUND, "Product not found", "Product not found", request);
+    }
+
+    /**
+     * The client addressed a cart line that is not there. PATCH has nothing to
+     * update, so 404 is the honest answer; the client can POST to create it.
+     */
+    @ExceptionHandler(CartItemNotFoundException.class)
+    public ProblemDetail onCartItemNotFound(CartItemNotFoundException ex,
+                                            HttpServletRequest request) {
+        return problem(HttpStatus.NOT_FOUND, "Cart item not found", "Cart item not found", request);
+    }
+
+    /**
+     * The requested quantity is above current stock. 409, not 400: the request is
+     * well-formed, it conflicts with the current state. The detail stays generic so
+     * the exact inventory number is not exposed.
+     */
+    @ExceptionHandler(InsufficientStockException.class)
+    public ProblemDetail onInsufficientStock(InsufficientStockException ex,
+                                             HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT, "Not enough stock", "Not enough stock available", request);
+    }
+
+    /**
+     * Spring MVC could not convert a path variable (for example "abc" to long).
+     * Without this, Boot's own advice would answer with a different shape.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail onTypeMismatch(MethodArgumentTypeMismatchException ex,
+                                        HttpServletRequest request) {
+        return problem(HttpStatus.BAD_REQUEST, "Invalid request", "Invalid request", request);
     }
 
     /**

@@ -35,9 +35,10 @@ exactly one Category.
 _Avoid_: collection, tag, department
 
 **Slug**:
-The URL-safe, unique, human-readable identifier used in public URLs
-(`/api/products/{slug}`) and for category filters. Stable across renames in a
-way an id is not readable and a name is not safe.
+The URL-safe, unique, human-readable identifier used in public Catalog URLs
+(`/api/products/{slug}`) and for category filters. It is the human-facing
+identifier; a Cart Item is keyed by the Product's immutable id instead, so a
+Slug rename cannot orphan a pending cart operation.
 _Avoid_: path, handle, key
 
 **Sku**:
@@ -66,3 +67,42 @@ Narrowing the product list with `q`, a case-insensitive contains match on the
 Product's name only — not on descriptions, categories or Sku. `%`, `_` and `\`
 are literal characters, not wildcards.
 _Avoid_: query, filter (a category filter is not a search)
+
+**Cart**:
+The single live basket of Products belonging to a User. A User has at most one
+Cart, and a Cart belongs to exactly one User. Carts exist only for signed-in
+shoppers; there is no guest Cart.
+_Avoid_: basket, bag, shopping list, order
+
+**Cart Item**:
+One Product in a Cart together with a Quantity. A Cart holds at most one Cart
+Item per Product; adding the same Product again increases that item's Quantity
+rather than creating a second row.
+_Avoid_: line item, row, entry, basket item
+
+**Quantity**:
+The number of units of a Product in a Cart Item. Always a positive whole number:
+`PATCH` with zero or a negative value is a validation error, and only `DELETE`
+removes the Cart Item. A change via `PATCH` sets the new Quantity outright
+rather than adding to it.
+_Avoid_: count, amount (that is money)
+
+**Subtotal**:
+The sum of each Cart Item's unit price multiplied by its Quantity. It is a Cart
+total before order-level costs, not an Order total.
+_Avoid_: total (reserved for an Order), basket total, cart value
+
+**Available**:
+Whether a Cart Item's Quantity can currently be fulfilled: the Product is Active
+and its stock is at least the Quantity. Distinct from **In stock**, which only
+says the Product has some units.
+_Avoid_: in stock, buyable, on hand
+
+**Line total**:
+The unit price of a Product multiplied by the Quantity in one Cart Item.
+_Avoid_: item total, subtotal (reserved for the whole Cart)
+
+**Total quantity**:
+The sum of the Quantities across all Cart Items in a Cart — units, not the
+number of distinct Cart Items.
+_Avoid_: item count (that is the number of Cart Items)

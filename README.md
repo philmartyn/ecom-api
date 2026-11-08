@@ -22,7 +22,8 @@ each slice is finished — with tests — before the next one starts.
 | Login issuing HS256 JWTs (`POST /api/auth/login`) | done |
 | Token validation on incoming requests | done |
 | Product browsing and search (`GET /api/products`, `GET /api/categories`) | done |
-| Cart, order and payment endpoints | **not started** |
+| Cart (`GET /api/cart`, add/update/remove items) | done |
+| Order and payment endpoints | **not started** |
 
 Registration, login, health/info, the API docs and the catalog are public; every
 other route requires `Authorization: Bearer <token>`. The public list and the
@@ -236,6 +237,84 @@ An unknown slug and an inactive product both return `404` with the same body.
 That is deliberate: distinguishing them would tell the world which products were
 retired.
 
+### `GET /api/cart`
+
+Requires a token. Returns the signed-in user's cart. The cart is implicit — the
+route carries no cart id, and neither does the response:
+
+```json
+{ "items": [
+    { "product": { "id": 1, "slug": "mechanical-keyboard",
+                   "name": "Mechanical Keyboard", "price": 89.99,
+                   "imageUrl": "https://example.com/keyboard.png" },
+      "quantity": 2, "lineTotal": 179.98, "available": true } ],
+  "totalQuantity": 2, "subtotal": 179.98 }
+```
+
+An empty cart is `200`, not `404`:
+
+```json
+{ "items": [], "totalQuantity": 0, "subtotal": 0.00 }
+```
+
+`GET` never writes. The cart row is created lazily by the first add, and it
+survives emptying, so a shopper who removes every line still has a cart rather
+than a stream of create/destroy cycles.
+
+`available` is `false` when the product is no longer Active or its stock has
+dropped below the line's quantity. The line stays visible with its price and
+`lineTotal`; the client decides whether to warn or hide it. Nothing is reserved,
+so a later checkout still has to re-check stock.
+
+Prices are **current**, not snapshots — the same line can cost more tomorrow.
+Only `order_items` snapshots name and price, because order history must not
+change. Lines are ordered by when they were added (`createdAt`, then id), so two
+identical `GET`s return the same list. Every success carries
+`Cache-Control: no-store`.
+
+### `POST /api/cart/items`
+
+```json
+{ "productId": 1, "quantity": 2 }
+```
+
+Adds to the cart, **accumulating**: adding 2 when 1 is already there leaves 3.
+`200` with the full cart.
+
+### `PATCH /api/cart/items/{productId}`
+
+```json
+{ "quantity": 3 }
+```
+
+Sets an **absolute** quantity — it does not add. `200` with the full cart.
+
+### `DELETE /api/cart/items/{productId}`
+
+Removes the line and returns `200` with the full cart. Idempotent: deleting a
+product that is not in the cart is still a success, so a retried request is
+harmless.
+
+The item key is the immutable `productId`, not the slug. Slugs stay the public
+Catalog identifier, but a rename cannot orphan a pending cart change.
+
+| Failure | Response |
+|---|---|
+| missing field, quantity not positive, `productId` ≤ 0 | `400` with an `errors` map |
+| non-numeric `productId` in the path | `400 "Invalid request"` |
+| product unknown or inactive (POST, PATCH) | `404 "Product not found"` |
+| PATCH for a product not in the cart | `404 "Cart item not found"` |
+| resulting quantity over stock | `409 "Not enough stock"` |
+| no token, or a token naming a deleted user | `401` |
+
+The `409` never includes the stock number: that is an inventory detail, the same
+reason `inStock` is a boolean. Nothing is reserved when a line is added or
+changed, so the check only means "this quantity is possible right now".
+
+The response deliberately omits the cart id, timestamps, currency, `sku` and
+stock quantity. Totals are money without a currency until multi-currency is a
+real requirement.
+
 ### Protecting routes
 
 Only these are public:
@@ -252,6 +331,10 @@ Only these are public:
 The catalog rules are `GET`-scoped. A `POST /api/products` is not public; it
 falls through to `authenticated()`, which keeps the public surface from growing
 when admin writes arrive.
+
+`/api/cart/**` is deliberately absent from the table above, so it falls through
+to `authenticated()`. There is no per-route rule to forget when another cart
+verb is added: anything not named as public is protected by default.
 
 Everything else is `authenticated()`. A missing or invalid token gets `401`
 problem+json with a `WWW-Authenticate: Bearer` header; an authenticated caller
@@ -289,7 +372,10 @@ Hibernate only validates against it. Applied migrations are never edited.
 | `payments` | provider reference, amount, status |
 
 `order_items` copies rather than references because order history must not
-change when a product is renamed, repriced or deleted.
+change when a product is renamed, repriced or deleted. `cart_items` does the
+opposite: it points at the live product, so the cart always shows the current
+price. That is also why a deactivated product can still appear in a cart, marked
+`available: false`.
 
 Money is `NUMERIC(12,2)` in the database and `BigDecimal` in Java — never
 `double`. Enums are stored as `VARCHAR` with a `CHECK` constraint and mapped
@@ -302,7 +388,8 @@ Package by feature, not by layer:
 
 ```
 com.example.ecom
-├── auth/            registration, login, JWT issuing and verification
+├── auth/            registration, login, JWT issuing, current-user lookup
+├── cart/            Cart aggregate, cart service, authenticated cart routes
 ├── catalog/         Category, Product, public browsing and search
 ├── common/
 │   ├── config/      security, JPA auditing, OpenAPI
@@ -321,7 +408,7 @@ what you read is what the compiler sees.
 ## Tests
 
 ```bash
-./gradlew test          # 98 tests, ~25s, needs Docker
+./gradlew test          # 163 tests, ~35s, needs Docker
 ```
 
 The same command runs on GitHub Actions for every push and pull request
@@ -333,14 +420,19 @@ The same command runs on GitHub Actions for every push and pull request
 | unit | `AuthServiceTest` | hashing, duplicate handling, 72-byte rule, credential failures |
 | unit | `TokenServiceTest` | claims, 15-minute lifetime, signature actually verified |
 | unit | `ProductQueryTest` | defaults, bounds, sort whitelist, whitespace normalisation |
+| unit | `CartTest` | accumulation, absolute change, removal, response totals, `available` |
 | slice | `AuthControllerTest` | JSON shape, status codes, problem-detail bodies, no hash leaks |
 | slice | `MeEndpointTest` | `/me` contract: `sub` → service id, `UserResponse` body, `no-store`, no hash |
 | slice | `CatalogControllerTest` | envelope, summary vs detail shape, 400s for bad paging and sort |
-| slice | `SecurityPerimeterTest` | public allowlist (including catalog GETs), 401 vs 403, unknown routes never leak 404 |
+| slice | `CartControllerTest` | the four routes, full-cart responses, 400/404/409 bodies, `no-store` |
+| slice | `SecurityPerimeterTest` | public allowlist (including catalog GETs), cart routes require a token, 401 vs 403, unknown routes never leak 404 |
 | repository | `UserRepositoryTest`, `CatalogRepositoryTest`, `DevDataSeederTest` | constraints, idempotent seeding |
+| repository | `CartRepositoryTest` | `NOT NULL` columns, cascade and orphan removal, entity graph, line order |
+| repository | `PessimisticLockTest` | a cart mutation blocks a second `FOR UPDATE`; plain reads are not blocked |
 | integration | `AuthRegistrationIntegrationTest`, `AuthLoginIntegrationTest` | the whole chain against real PostgreSQL |
 | integration | `TokenValidationIntegrationTest` | valid login token accepted; tampered, expired, wrong-secret, wrong-issuer, unknown-role, bad-subject and deleted-user tokens rejected |
 | integration | `CatalogIntegrationTest` | search escaping, category filter, active-only visibility, paging past the end |
+| integration | `CartIntegrationTest` | lazy creation, accumulate vs absolute, idempotent delete, stock `409`, deactivated lines stay visible, current prices, ordering |
 
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
@@ -355,8 +447,8 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Login issuing JWTs
 - [x] Token validation, route lockdown, `GET /api/auth/me`
 - [x] Product browsing and search (`GET /api/products`, `GET /api/categories`)
-- [ ] **Next:** Cart: add, update quantity, remove
-- [ ] Checkout and orders
+- [x] Cart: add, update quantity, remove
+- [ ] **Next:** Checkout and orders
 - [ ] Stripe payment integration
 - [ ] Admin: products, pricing, inventory
 - [ ] Observability stack (Compose profile is written but commented out)
@@ -368,8 +460,25 @@ Deliberate for now, listed so nobody mistakes them for oversights:
 - **Role changes lag up to 15 minutes.** Authorization trusts the token's `role`
   claim, so a demoted admin keeps the old role until that token expires. `/me`
   reads the database, but ordinary protected routes do not.
-- **A deleted user's token still works** on routes that trust claims alone; only
-  `/me` rejects it. Worth revisiting when orders exist.
+- **A deleted user's token still works** on routes that trust claims alone.
+  `/me` and every cart route re-check the database, so they return `401`; the
+  rest do not. Worth revisiting when orders exist.
+- **Cart stock is not reserved.** Adding or changing a line only checks stock at
+  that moment. Two shoppers can both hold the last unit in their carts, and
+  checkout will have to re-check before charging.
+- **Cart prices are current, not snapshotted.** Repricing a product changes every
+  cart's `lineTotal` immediately. Snapshots belong to `order_items`, where the
+  history must stay fixed.
+- **Totals have no currency.** `subtotal` and `lineTotal` are bare decimals.
+  Multi-currency is a real feature, not a formatting choice; until then a
+  currency field would be a constant.
+- **No clear-cart endpoint.** Removing everything is one `DELETE` per line.
+  A bulk clear is easy to add when a checkout flow needs it.
+- **No guest cart or merge-on-login.** ADR 0002 keeps carts authenticated-only,
+  so there is nothing to merge. Supporting guests means a cookie identity and a
+  merge rule for two carts of the same product.
+- **Carts never expire.** A cart row lives until its user is deleted. If
+  abandoned carts ever cost storage or skew analytics, they need a sweeper.
 - **No logout or revocation.** A token is valid until `exp`; the server keeps no
   session. `jti` is there for the day a denylist is worth building.
 - **No refresh tokens.** After 15 minutes the client logs in again.

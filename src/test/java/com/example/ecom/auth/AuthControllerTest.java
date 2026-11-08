@@ -30,7 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @WebMvcTest(AuthController.class)
 @AutoConfigureMockMvc(addFilters = false)
-@Import(ApiExceptionHandler.class)
+@Import({ApiExceptionHandler.class, CurrentUserProvider.class})
 class AuthControllerTest {
 
     private static final String VALID_BODY = """

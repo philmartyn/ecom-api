@@ -8,7 +8,9 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -94,6 +96,28 @@ class SecurityPerimeterTest extends AbstractIntegrationTest {
     @Test
     void rejectsAnUnknownRouteBeforeItCanRevealA404() throws Exception {
         mockMvc.perform(get("/api/orders"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+    }
+
+    @Test
+    void requiresATokenForEveryCartRoute() throws Exception {
+        // The cart is per user, so no cart route is public. Authorization runs
+        // before request mapping and body parsing, so even a bodiless POST is
+        // rejected as unauthenticated rather than as a validation error.
+        mockMvc.perform(get("/api/cart"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(post("/api/cart/items"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(patch("/api/cart/items/1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(delete("/api/cart/items/1"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.title").value("Unauthorized"));
     }
