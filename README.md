@@ -23,7 +23,7 @@ each slice is finished — with tests — before the next one starts.
 | Token validation on incoming requests | done |
 | Product browsing and search (`GET /api/products`, `GET /api/categories`) | done |
 | Cart (`GET /api/cart`, add/update/remove items) | done |
-| Orders: checkout, list, detail, cancel | **designed** — see [ADR-0004](docs/adr/0004-checkout-pending-orders.md) |
+| Orders: checkout, list, detail, cancel | done |
 | Payment (Stripe) | **not started** |
 
 Registration, login, health/info, the API docs and the catalog are public; every
@@ -318,10 +318,10 @@ real requirement.
 
 ### Order endpoints
 
-**Designed, not implemented.** The contract below is fixed by
-[ADR-0004](docs/adr/0004-checkout-pending-orders.md); the code and tests land in
-the checkout slice. Every order route re-checks the User row, so a token naming
-a deleted user is `401`, not an empty list or `404`.
+The contract below is fixed by
+[ADR-0004](docs/adr/0004-checkout-pending-orders.md). Every order route
+re-checks the User row, so a token naming a deleted user is `401`, not an empty
+list or `404`.
 
 #### `POST /api/orders`
 
@@ -500,9 +500,9 @@ com.example.ecom
 │   ├── domain/      AuditableEntity (created_at / updated_at)
 │   ├── exception/   domain exceptions + RFC 9457 advice
 │   ├── security/    filter-chain entry point, access-denied handler, problem body
-│   └── web/         PageResponse pagination envelope
+│   └── web/         PageResponse envelope, PageParams bounds, NoStore builder
 ├── dev/             local-only data seeder
-├── order/           Order aggregate, checkout, order reads, cancellation (planned)
+├── order/           Order aggregate, checkout, order reads, cancellation
 └── user/            User, Role, repository
 ```
 
@@ -513,7 +513,7 @@ what you read is what the compiler sees.
 ## Tests
 
 ```bash
-./gradlew test          # 163 tests, ~35s, needs Docker
+./gradlew test          # 225 tests, ~35s, needs Docker
 ```
 
 The same command runs on GitHub Actions for every push and pull request
@@ -526,23 +526,27 @@ The same command runs on GitHub Actions for every push and pull request
 | unit | `TokenServiceTest` | claims, 15-minute lifetime, signature actually verified |
 | unit | `ProductQueryTest` | defaults, bounds, sort whitelist, whitespace normalisation |
 | unit | `CartTest` | accumulation, absolute change, removal, response totals, `available` |
+| unit | `OrderTest` | line snapshots, totals, `totalQuantity`, cancel transitions, shipping normalisation |
 | slice | `AuthControllerTest` | JSON shape, status codes, problem-detail bodies, no hash leaks |
 | slice | `MeEndpointTest` | `/me` contract: `sub` → service id, `UserResponse` body, `no-store`, no hash |
 | slice | `CatalogControllerTest` | envelope, summary vs detail shape, 400s for bad paging and sort |
 | slice | `CartControllerTest` | the four routes, full-cart responses, 400/404/409 bodies, `no-store` |
-| slice | `SecurityPerimeterTest` | public allowlist (including catalog GETs), cart routes require a token, 401 vs 403, unknown routes never leak 404 |
+| slice | `OrderControllerTest` | checkout/list/detail/cancel, `Location`, `no-store`, 400/404/409 bodies, no inventory leaks |
+| slice | `SecurityPerimeterTest` | public allowlist (including catalog GETs), cart and order routes require a token, 401 vs 403, unknown routes never leak 404 |
 | repository | `UserRepositoryTest`, `CatalogRepositoryTest`, `DevDataSeederTest` | constraints, idempotent seeding |
 | repository | `CartRepositoryTest` | `NOT NULL` columns, cascade and orphan removal, entity graph, line order |
 | repository | `PessimisticLockTest` | a cart mutation blocks a second `FOR UPDATE`; plain reads are not blocked |
+| repository | `OrderRepositoryTest` | constraints, cascade, entity graph, owner scoping, `FOR UPDATE` lookup |
 | integration | `AuthRegistrationIntegrationTest`, `AuthLoginIntegrationTest` | the whole chain against real PostgreSQL |
 | integration | `TokenValidationIntegrationTest` | valid login token accepted; tampered, expired, wrong-secret, wrong-issuer, unknown-role, bad-subject and deleted-user tokens rejected |
 | integration | `CatalogIntegrationTest` | search escaping, category filter, active-only visibility, paging past the end |
 | integration | `CartIntegrationTest` | lazy creation, accumulate vs absolute, idempotent delete, stock `409`, deactivated lines stay visible, current prices, ordering |
+| integration | `OrderIntegrationTest` | checkout, empty/unavailable `409`, cart clearing, owner-only reads, cancel transitions, deleted-user `401` |
+| integration | `OrderConcurrencyTest` | one order from two concurrent checkouts; two concurrent cancels both succeed |
 
-The order slice (ADR-0004) adds `OrderTest`, `OrderControllerTest`,
+The order slice (ADR-0004) is covered by `OrderTest`, `OrderControllerTest`,
 `OrderRepositoryTest`, `OrderIntegrationTest` and `OrderConcurrencyTest`, and
-extends `SecurityPerimeterTest` to cover `/api/orders/**`. The test count above
-will move when that code lands.
+`SecurityPerimeterTest` now includes `/api/orders/**`.
 
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
@@ -558,8 +562,8 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Token validation, route lockdown, `GET /api/auth/me`
 - [x] Product browsing and search (`GET /api/products`, `GET /api/categories`)
 - [x] Cart: add, update quantity, remove
-- [ ] **Next:** Checkout and orders — designed in ADR-0004
-- [ ] Stripe payment integration
+- [x] Checkout and orders: `PENDING` creation, list, detail, cancel (ADR-0004)
+- [ ] **Next:** Stripe payment integration
 - [ ] Admin: products, pricing, inventory
 - [ ] Observability stack (Compose profile is written but commented out)
 
