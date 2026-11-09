@@ -95,7 +95,7 @@ class SecurityPerimeterTest extends AbstractIntegrationTest {
 
     @Test
     void rejectsAnUnknownRouteBeforeItCanRevealA404() throws Exception {
-        mockMvc.perform(get("/api/orders"))
+        mockMvc.perform(get("/api/not-a-real-route"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.title").value("Unauthorized"));
     }
@@ -118,6 +118,28 @@ class SecurityPerimeterTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.title").value("Unauthorized"));
 
         mockMvc.perform(delete("/api/cart/items/1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+    }
+
+    @Test
+    void requiresATokenForEveryOrderRoute() throws Exception {
+        // Orders are per user, so no order route is public. Authorization runs
+        // before request mapping, so even a bodiless POST is rejected as
+        // unauthenticated rather than as a validation error.
+        mockMvc.perform(get("/api/orders"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(post("/api/orders"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(get("/api/orders/1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(post("/api/orders/1/cancel"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.title").value("Unauthorized"));
     }

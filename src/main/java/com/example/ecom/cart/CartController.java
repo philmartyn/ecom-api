@@ -1,6 +1,7 @@
 package com.example.ecom.cart;
 
 import com.example.ecom.auth.CurrentUserProvider;
+import com.example.ecom.common.web.NoStore;
 import jakarta.validation.Valid;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -32,17 +33,17 @@ public class CartController {
     @GetMapping
     public ResponseEntity<CartResponse> getCart(
             @AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt) {
-        return noStore(cartService.getCart(currentUserProvider.currentUserId(jwt)));
+        return NoStore.ok().body(cartService.getCart(currentUserProvider.currentUserId(jwt)));
     }
 
     @PostMapping("/items")
     public ResponseEntity<CartResponse> addItem(
             @AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt,
             @Valid @RequestBody AddCartItemRequest request) {
-        return noStore(cartService.addItem(
-                currentUserProvider.currentUserId(jwt),
-                request.productId(),
-                request.quantity()));
+        return  NoStore.ok().body(cartService.addItem(
+                    currentUserProvider.currentUserId(jwt),
+                    request.productId(),
+                    request.quantity()));
     }
 
     @PatchMapping("/items/{productId}")
@@ -50,24 +51,18 @@ public class CartController {
             @AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt,
             @PathVariable long productId,
             @Valid @RequestBody UpdateCartItemRequest request) {
-        return noStore(cartService.changeQuantity(
-                currentUserProvider.currentUserId(jwt),
-                productId,
-                request.quantity()));
+        return  NoStore.ok().body(cartService.changeQuantity(
+                    currentUserProvider.currentUserId(jwt),
+                    productId,
+                    request.quantity()));
     }
 
     @DeleteMapping("/items/{productId}")
     public ResponseEntity<CartResponse> removeItem(
             @AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt,
             @PathVariable long productId) {
-        return noStore(cartService.removeItem(
-                currentUserProvider.currentUserId(jwt),
-                productId));
-    }
-
-    private static ResponseEntity<CartResponse> noStore(CartResponse body) {
-        return ResponseEntity.ok()
-                .cacheControl(CacheControl.noStore())
-                .body(body);
+        return  NoStore.ok().body(cartService.removeItem(
+                    currentUserProvider.currentUserId(jwt),
+                    productId));
     }
 }

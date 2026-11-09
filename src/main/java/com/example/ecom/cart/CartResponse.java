@@ -4,12 +4,12 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
+import static com.example.ecom.common.helpers.Numbers.BIG_DECIMAL_ZERO;
+
 public record CartResponse(
         List<CartItemResponse> items,
         int totalQuantity,
         BigDecimal subtotal) {
-
-    private static final BigDecimal ZERO = new BigDecimal("0.00");
 
     public static CartResponse from(Cart cart) {
         List<CartItemResponse> items = cart.getItems().stream()
@@ -22,13 +22,13 @@ public record CartResponse(
 
         BigDecimal subtotal = items.stream()
                 .map(CartItemResponse::lineTotal)
-                .reduce(ZERO, BigDecimal::add)
+                .reduce(BIG_DECIMAL_ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
 
         return new CartResponse(items, totalQuantity, subtotal);
     }
 
     public static CartResponse empty() {
-        return new CartResponse(List.of(), 0, ZERO);
+        return new CartResponse(List.of(), 0, BIG_DECIMAL_ZERO);
     }
 }

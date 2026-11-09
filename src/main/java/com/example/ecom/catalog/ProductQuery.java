@@ -1,6 +1,7 @@
 package com.example.ecom.catalog;
 
 import com.example.ecom.common.exception.InvalidRequestException;
+import com.example.ecom.common.web.PageParams;
 
 import java.util.Locale;
 import java.util.Set;
@@ -24,12 +25,7 @@ public record ProductQuery(
         q = normalise(q);
         category = normalise(category);
 
-        if (page < 0) {
-            throw new InvalidRequestException("page must be zero or greater");
-        }
-        if (size < 1 || size > 100) {
-            throw new InvalidRequestException("size must be between 1 and 100");
-        }
+        PageParams.requireValid(page, size);
 
         sort = parseSort(sort);
     }

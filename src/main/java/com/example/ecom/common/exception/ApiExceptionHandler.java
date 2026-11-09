@@ -119,6 +119,35 @@ public class ApiExceptionHandler {
                 "The request conflicts with existing data", request);
     }
 
+    @ExceptionHandler(EmptyCartException.class)
+    public ProblemDetail onEmptyCart(EmptyCartException ex,
+                                     HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT, "Cart is empty", "Cart is empty", request);
+    }
+
+    @ExceptionHandler(CartNotCheckoutableException.class)
+    public ProblemDetail onCartNotCheckoutable(CartNotCheckoutableException ex,
+                                               HttpServletRequest request) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT,
+                "Cart cannot be checked out",
+                "One or more items are unavailable", request);
+        problem.setProperty("unavailableItems", ex.getUnavailableItems());
+        return problem;
+    }
+
+    @ExceptionHandler(OrderNotFoundException.class)
+    public ProblemDetail onOrderNotFound(OrderNotFoundException ex,
+                                         HttpServletRequest request) {
+        return problem(HttpStatus.NOT_FOUND, "Order not found", "Order not found", request);
+    }
+
+    @ExceptionHandler(OrderNotCancellableException.class)
+    public ProblemDetail onOrderNotCancellable(OrderNotCancellableException ex,
+                                               HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT,
+                "Order cannot be cancelled", "Order cannot be cancelled", request);
+    }
+
     private ProblemDetail problem(HttpStatus status, String title, String detail,
                                   HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);

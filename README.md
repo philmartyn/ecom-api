@@ -4,8 +4,8 @@
 
 A small eCommerce REST API built as a learning project from the
 [roadmap.sh eCommerce API](https://roadmap.sh/projects/ecommerce-api) brief:
-signup and login, a product catalog, a shopping cart, checkout with Stripe, and
-an admin panel.
+signup and login, a product catalog, a shopping cart, orders, checkout with
+Stripe, and an admin panel.
 
 The goal is understanding, not speed, so the code is organised by feature and
 each slice is finished — with tests — before the next one starts.
@@ -23,7 +23,8 @@ each slice is finished — with tests — before the next one starts.
 | Token validation on incoming requests | done |
 | Product browsing and search (`GET /api/products`, `GET /api/categories`) | done |
 | Cart (`GET /api/cart`, add/update/remove items) | done |
-| Order and payment endpoints | **not started** |
+| Orders: checkout, list, detail, cancel | **designed** — see [ADR-0004](docs/adr/0004-checkout-pending-orders.md) |
+| Payment (Stripe) | **not started** |
 
 Registration, login, health/info, the API docs and the catalog are public; every
 other route requires `Authorization: Bearer <token>`. The public list and the
@@ -315,6 +316,103 @@ The response deliberately omits the cart id, timestamps, currency, `sku` and
 stock quantity. Totals are money without a currency until multi-currency is a
 real requirement.
 
+### Order endpoints
+
+**Designed, not implemented.** The contract below is fixed by
+[ADR-0004](docs/adr/0004-checkout-pending-orders.md); the code and tests land in
+the checkout slice. Every order route re-checks the User row, so a token naming
+a deleted user is `401`, not an empty list or `404`.
+
+#### `POST /api/orders`
+
+Requires a token. Turns the caller's cart into a `PENDING` order, snapshots
+each line's product name and unit price, and empties the cart. The `carts` row
+survives. No payment is attempted and no `payments` row is written.
+
+```json
+{ "shipping": { "name": "Bob Smith", "line1": "1 Main St",
+                "line2": "Apt 2", "city": "Springfield",
+                "postalCode": "12345", "country": "US" } }
+```
+
+`line2` is optional; every other field is required. `country` is a two-letter
+code, stored uppercase.
+
+`201 Created` with `Location: /api/orders/{id}` and the full order:
+
+```json
+{ "id": 1, "status": "PENDING", "subtotal": 179.98, "total": 179.98,
+  "currency": "USD", "totalQuantity": 2,
+  "shipping": { "name": "Bob Smith", "line1": "1 Main St", "line2": "Apt 2",
+                "city": "Springfield", "postalCode": "12345", "country": "US" },
+  "items": [ { "productId": 1, "productName": "Mechanical Keyboard",
+               "unitPrice": 89.99, "quantity": 2, "lineTotal": 179.98 } ],
+  "createdAt": "2026-11-08T12:00:00Z", "updatedAt": "2026-11-08T12:00:00Z" }
+```
+
+Stock is checked, not reserved: the order is rejected if any line is inactive
+or short on stock, but no quantity is decremented. The payment slice re-checks
+before charging.
+
+| Failure | Response |
+|---|---|
+| missing or invalid shipping fields | `400` with an `errors` map |
+| empty cart | `409 "Cart is empty"` |
+| one or more lines unavailable | `409` with `unavailableItems` |
+| no token, or a token naming a deleted user | `401` |
+
+An unavailable-line body names the lines and the reason, never the stock count:
+
+```json
+{ "title": "Cart cannot be checked out", "status": 409,
+  "detail": "One or more items are unavailable", "instance": "/api/orders",
+  "unavailableItems": [
+    { "productId": 1, "slug": "mechanical-keyboard", "reason": "INSUFFICIENT_STOCK" }
+  ] }
+```
+
+`reason` is `INACTIVE` or `INSUFFICIENT_STOCK`; `INACTIVE` wins when both apply.
+
+#### `GET /api/orders`
+
+Requires a token. The caller's orders, newest first, as a page of summaries:
+
+```json
+{ "items": [ { "id": 1, "status": "PENDING", "subtotal": 179.98,
+               "total": 179.98, "currency": "USD", "totalQuantity": 2,
+               "createdAt": "2026-11-08T12:00:00Z" } ],
+  "page": 0, "size": 20, "totalElements": 1, "totalPages": 1 }
+```
+
+`page` defaults to `0` and `size` to `20` (1–100); an invalid value is `400`.
+There is no status filter and no client-chosen sort yet. A token naming a
+deleted user is `401`.
+
+#### `GET /api/orders/{id}`
+
+Requires a token. `200` with the full order shown under `POST /api/orders`.
+Only the caller's own order is visible: an unknown id and another user's id both
+return the same `404`, so order ids cannot be enumerated. A token naming a
+deleted user is `401`, not `404`.
+
+#### `POST /api/orders/{id}/cancel`
+
+Requires a token. Moves the caller's own `PENDING` order to `CANCELLED` and
+returns `200` with the full order. There is no request body.
+
+| Failure | Response |
+|---|---|
+| unknown id, or another user's order | `404` |
+| order is `PAID`, `SHIPPED` or `DELIVERED` | `409 "Order cannot be cancelled"` |
+| no token, or a token naming a deleted user | `401` |
+
+Cancelling an already-`CANCELLED` order is `200`, not `409`, so a retry is
+harmless. Cancellation does not restore the cart and does not touch stock.
+
+All order responses carry `Cache-Control: no-store`. A retried checkout after a
+lost response gets `409 "Cart is empty"`; the client should read
+`GET /api/orders` to find the order that was created.
+
 ### Protecting routes
 
 Only these are public:
@@ -335,6 +433,9 @@ when admin writes arrive.
 `/api/cart/**` is deliberately absent from the table above, so it falls through
 to `authenticated()`. There is no per-route rule to forget when another cart
 verb is added: anything not named as public is protected by default.
+
+`/api/orders/**` is likewise absent, so checkout, order reads and cancellation
+all fall through to `authenticated()`. There is no public order route.
 
 Everything else is `authenticated()`. A missing or invalid token gets `401`
 problem+json with a `WWW-Authenticate: Bearer` header; an authenticated caller
@@ -367,15 +468,18 @@ Hibernate only validates against it. Applied migrations are never edited.
 | `products` | price `NUMERIC(12,2)`, stock, active flag |
 | `carts` | one live cart per user |
 | `cart_items` | product, quantity, unique per cart and product |
-| `orders` | totals, status, shipping address |
-| `order_items` | **snapshots** of name and price at purchase time |
-| `payments` | provider reference, amount, status |
+| `orders` | one row per checkout; PENDING status, totals, currency, shipping address |
+| `order_items` | **snapshots** of name, unit price and quantity at checkout |
+| `payments` | provider reference, amount, status — unused until Stripe |
 
 `order_items` copies rather than references because order history must not
 change when a product is renamed, repriced or deleted. `cart_items` does the
 opposite: it points at the live product, so the cart always shows the current
 price. That is also why a deactivated product can still appear in a cart, marked
 `available: false`.
+
+An order is created `PENDING`; its `order_items` are fixed at that moment, and
+the stock decrement waits for payment (ADR-0004).
 
 Money is `NUMERIC(12,2)` in the database and `BigDecimal` in Java — never
 `double`. Enums are stored as `VARCHAR` with a `CHECK` constraint and mapped
@@ -398,6 +502,7 @@ com.example.ecom
 │   ├── security/    filter-chain entry point, access-denied handler, problem body
 │   └── web/         PageResponse pagination envelope
 ├── dev/             local-only data seeder
+├── order/           Order aggregate, checkout, order reads, cancellation (planned)
 └── user/            User, Role, repository
 ```
 
@@ -434,6 +539,11 @@ The same command runs on GitHub Actions for every push and pull request
 | integration | `CatalogIntegrationTest` | search escaping, category filter, active-only visibility, paging past the end |
 | integration | `CartIntegrationTest` | lazy creation, accumulate vs absolute, idempotent delete, stock `409`, deactivated lines stay visible, current prices, ordering |
 
+The order slice (ADR-0004) adds `OrderTest`, `OrderControllerTest`,
+`OrderRepositoryTest`, `OrderIntegrationTest` and `OrderConcurrencyTest`, and
+extends `SecurityPerimeterTest` to cover `/api/orders/**`. The test count above
+will move when that code lands.
+
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
 than one per class. Migrations run against it exactly as they do in production.
@@ -448,7 +558,7 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Token validation, route lockdown, `GET /api/auth/me`
 - [x] Product browsing and search (`GET /api/products`, `GET /api/categories`)
 - [x] Cart: add, update quantity, remove
-- [ ] **Next:** Checkout and orders
+- [ ] **Next:** Checkout and orders — designed in ADR-0004
 - [ ] Stripe payment integration
 - [ ] Admin: products, pricing, inventory
 - [ ] Observability stack (Compose profile is written but commented out)
@@ -461,19 +571,34 @@ Deliberate for now, listed so nobody mistakes them for oversights:
   claim, so a demoted admin keeps the old role until that token expires. `/me`
   reads the database, but ordinary protected routes do not.
 - **A deleted user's token still works** on routes that trust claims alone.
-  `/me` and every cart route re-check the database, so they return `401`; the
-  rest do not. Worth revisiting when orders exist.
-- **Cart stock is not reserved.** Adding or changing a line only checks stock at
-  that moment. Two shoppers can both hold the last unit in their carts, and
-  checkout will have to re-check before charging.
+  `/me`, every cart route and every order route re-check the database, so they
+  return `401`; the rest do not. The admin slice should revisit this globally.
+- **Cart and checkout stock are not reserved.** Adding a cart line only checks
+  stock at that moment, and checkout validates again without decrementing. Two
+  shoppers can both hold the last unit and both create `PENDING` orders; the
+  payment slice must re-check and commit the decrement (ADR-0004).
+- **A retried checkout is not idempotent.** There is no `Idempotency-Key`; a
+  retry after a lost response gets `409 "Cart is empty"`. The client recovers
+  with `GET /api/orders`. Concurrent duplicates are prevented by the User-row
+  lock.
+- **`PENDING` orders do not expire.** They hold no stock, so the cost is history
+  clutter; an expiry rule belongs with payments.
+- **Cancelling does not restore the cart.** The order keeps the lines; "buy
+  again" is a client concern.
+- **No admin order access.** Orders are owner-only until the admin slice.
+- **Order totals have no shipping or tax.** `total` equals `subtotal`; adding
+  either needs new columns and a calculation.
+- **Order lines have no slug or image snapshot.** The detail returns `productId`
+  and the snapshotted name and price only; a product link needs a current
+  catalog lookup, and the slug may have changed since checkout.
 - **Cart prices are current, not snapshotted.** Repricing a product changes every
   cart's `lineTotal` immediately. Snapshots belong to `order_items`, where the
   history must stay fixed.
-- **Totals have no currency.** `subtotal` and `lineTotal` are bare decimals.
-  Multi-currency is a real feature, not a formatting choice; until then a
-  currency field would be a constant.
-- **No clear-cart endpoint.** Removing everything is one `DELETE` per line.
-  A bulk clear is easy to add when a checkout flow needs it.
+- **Cart totals have no currency.** `subtotal` and `lineTotal` are bare
+  decimals; an Order stores `USD`. Multi-currency is a real feature, not a
+  formatting choice.
+- **No clear-cart endpoint.** Checkout empties the cart, but removing everything
+  without ordering is still one `DELETE` per line.
 - **No guest cart or merge-on-login.** ADR 0002 keeps carts authenticated-only,
   so there is nothing to merge. Supporting guests means a cookie identity and a
   merge rule for two carts of the same product.

@@ -5,9 +5,8 @@ import com.example.ecom.catalog.ProductRepository;
 import com.example.ecom.common.exception.CartItemNotFoundException;
 import com.example.ecom.common.exception.InsufficientStockException;
 import com.example.ecom.common.exception.ProductNotFoundException;
-import com.example.ecom.common.exception.UserNotFoundException;
 import com.example.ecom.user.User;
-import com.example.ecom.user.UserRepository;
+import com.example.ecom.user.UserAccess;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
 
@@ -19,20 +18,19 @@ public class CartService {
 
     private final CartRepository cartRepository;
     private final ProductRepository productRepository;
-    private final UserRepository userRepository;
+    private final UserAccess userAccess;
 
     public CartService(CartRepository cartRepository,
                        ProductRepository productRepository,
-                       UserRepository userRepository) {
+                       UserAccess userAccess) {
         this.cartRepository = cartRepository;
         this.productRepository = productRepository;
-        this.userRepository = userRepository;
+        this.userAccess = userAccess;;
     }
 
     public CartResponse getCart(long userId) {
-        if (!userRepository.existsById(userId)) {
-            throw new UserNotFoundException(userId);
-        }
+        userAccess.requireExists(userId);
+
         return cartRepository.findByUserId(userId)
                 .map(CartResponse::from)
                 .orElseGet(CartResponse::empty);
@@ -40,7 +38,7 @@ public class CartService {
 
     @Transactional
     public CartResponse addItem(long userId, long productId, int quantity) {
-        User user = lockUser(userId);
+        User user = userAccess.lockUser(userId);
         Product product = activeProduct(productId);
         Cart cart = cartFor(user);
 
@@ -53,7 +51,7 @@ public class CartService {
 
     @Transactional
     public CartResponse changeQuantity(long userId, long productId, int quantity) {
-        User user = lockUser(userId);
+        User user = userAccess.lockUser(userId);
         Product product = activeProduct(productId);
 
         Cart cart = cartRepository.findByUserId(user.getId())
@@ -71,7 +69,7 @@ public class CartService {
 
     @Transactional
     public CartResponse removeItem(long userId, long productId) {
-        User user = lockUser(userId);
+        User user = userAccess.lockUser(userId);
 
         Optional<Cart> existing = cartRepository.findByUserId(user.getId());
         if (existing.isEmpty()) {
@@ -82,11 +80,6 @@ public class CartService {
         productRepository.findById(productId).ifPresent(cart::removeItem);
         cartRepository.saveAndFlush(cart);
         return CartResponse.from(cart);
-    }
-
-    private User lockUser(long userId) {
-        return userRepository.findByIdForUpdate(userId)
-                .orElseThrow(() -> new UserNotFoundException(userId));
     }
 
     private Product activeProduct(long productId) {

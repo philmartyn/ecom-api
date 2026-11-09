@@ -2,6 +2,8 @@ package com.example.ecom.cart;
 
 import com.example.ecom.catalog.Product;
 import com.example.ecom.common.domain.AuditableEntity;
+import com.example.ecom.common.exception.UnavailableItem;
+import com.example.ecom.common.exception.UnavailableReason;
 import com.example.ecom.user.User;
 import jakarta.persistence.*;
 
@@ -104,5 +106,25 @@ public class Cart extends AuditableEntity {
         if (quantity < 1) {
             throw new IllegalArgumentException("Quantity must be at least 1");
         }
+    }
+
+    public void clear() {
+        items.clear();
+    }
+
+    public List<UnavailableItem> unavailableItems(Cart cart) {
+        List<UnavailableItem> unavailable = new ArrayList<>();
+        for (CartItem item : cart.getItems()) {
+            Product product = item.getProduct();
+            if (!product.isActive()) {
+                unavailable.add(new UnavailableItem(
+                        product.getId(), product.getSlug(), UnavailableReason.INACTIVE));
+            } else if (product.getStockQuantity() < item.getQuantity()) {
+                unavailable.add(new UnavailableItem(
+                        product.getId(), product.getSlug(),
+                        UnavailableReason.INSUFFICIENT_STOCK));
+            }
+        }
+        return unavailable;
     }
 }

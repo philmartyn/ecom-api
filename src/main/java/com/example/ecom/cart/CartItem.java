@@ -40,7 +40,7 @@ public class CartItem extends AuditableEntity {
     }
 
     public Product getProduct() {
-    return product;
+        return product;
     }
 
     public int getQuantity(){

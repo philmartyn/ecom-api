@@ -6,6 +6,8 @@ shared by the code, the docs and the issue tracker; it is not a spec.
 
 ## Language
 
+### Accounts
+
 **User**:
 A person with an account in the store, identified by a case-insensitive unique
 email, with one Role.
@@ -18,6 +20,8 @@ _Avoid_: user type, permission level
 **Customer**:
 The Role every User receives at registration — not a separate entity from User.
 _Avoid_: client, buyer, shopper
+
+### Catalog
 
 **Catalog**:
 The public, read-only view of what is for sale: categories and products. It is
@@ -68,6 +72,8 @@ Product's name only — not on descriptions, categories or Sku. `%`, `_` and `\`
 are literal characters, not wildcards.
 _Avoid_: query, filter (a category filter is not a search)
 
+### Cart
+
 **Cart**:
 The single live basket of Products belonging to a User. A User has at most one
 Cart, and a Cart belongs to exactly one User. Carts exist only for signed-in
@@ -81,16 +87,15 @@ rather than creating a second row.
 _Avoid_: line item, row, entry, basket item
 
 **Quantity**:
-The number of units of a Product in a Cart Item. Always a positive whole number:
-`PATCH` with zero or a negative value is a validation error, and only `DELETE`
-removes the Cart Item. A change via `PATCH` sets the new Quantity outright
-rather than adding to it.
+The number of units of a Product in a Cart Item or an Order Item. Always a
+positive whole number. A Cart Item's Quantity is replaced outright when changed,
+never accumulated; an Order Item's Quantity is fixed at Checkout.
 _Avoid_: count, amount (that is money)
 
 **Subtotal**:
-The sum of each Cart Item's unit price multiplied by its Quantity. It is a Cart
-total before order-level costs, not an Order total.
-_Avoid_: total (reserved for an Order), basket total, cart value
+The sum of the Line totals in a Cart or an Order, before any order-level costs
+such as shipping or tax.
+_Avoid_: total (that is the Order total), basket total, cart value
 
 **Available**:
 Whether a Cart Item's Quantity can currently be fulfilled: the Product is Active
@@ -99,10 +104,50 @@ says the Product has some units.
 _Avoid_: in stock, buyable, on hand
 
 **Line total**:
-The unit price of a Product multiplied by the Quantity in one Cart Item.
-_Avoid_: item total, subtotal (reserved for the whole Cart)
+The unit price of a Product multiplied by the Quantity in one Cart Item or
+Order Item.
+_Avoid_: item total, subtotal (that is the whole Cart or Order)
 
 **Total quantity**:
-The sum of the Quantities across all Cart Items in a Cart — units, not the
-number of distinct Cart Items.
-_Avoid_: item count (that is the number of Cart Items)
+The sum of the Quantities across all Cart Items in a Cart or Order Items in an
+Order — units, not the number of distinct items.
+_Avoid_: item count (that is the number of distinct items)
+
+### Orders
+
+**Order**:
+The record of a Checkout: the Cart's Products with their names and unit prices
+snapshotted as Order Items, a Shipping Address, and an Order Status. It exists
+before payment.
+_Avoid_: purchase, transaction, basket, cart
+
+**Order Item**:
+One Product in an Order, with the Product's name and unit price snapshotted at
+Checkout and a fixed Quantity. It is not a Cart Item: later Product changes do
+not alter it.
+_Avoid_: line item, order line, cart item
+
+**Checkout**:
+The act of turning the signed-in User's Cart into a PENDING Order. The Order
+snapshots the lines; the Cart is emptied.
+_Avoid_: place order, purchase, pay (payment is a later step)
+
+**Order Status**:
+The lifecycle state of an Order, one of `PENDING`, `PAID`, `SHIPPED`,
+`DELIVERED` or `CANCELLED`.
+_Avoid_: state, phase, payment status (that is the Payment's status)
+
+**Shipping Address**:
+The name and postal address an Order is shipped to, captured at Checkout. It is
+part of the Order, not a saved address-book entry.
+_Avoid_: delivery address, mailing address
+
+**Order total**:
+The amount the shopper pays for an Order: its Subtotal plus any order-level
+costs. Until such costs exist, it equals the Subtotal.
+_Avoid_: total (unqualified), grand total, amount
+
+**Cancellation**:
+Ending a PENDING Order before payment, moving it to CANCELLED. It leaves the
+Cart empty and does not change the Order Items.
+_Avoid_: delete, removal, refund (a refund belongs to a Payment)
