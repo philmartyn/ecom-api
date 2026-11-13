@@ -42,6 +42,7 @@ public class SecurityConfig {
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers(HttpMethod.GET,
                                 "/api/categories", "/api/products", "/api/products/**").permitAll()
+                        .requestMatchers(HttpMethod.POST ,"/api/payments/webhook").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> jwt

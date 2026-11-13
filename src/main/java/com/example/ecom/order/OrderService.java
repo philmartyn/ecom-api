@@ -6,6 +6,7 @@ import com.example.ecom.cart.CartRepository;
 import com.example.ecom.common.exception.*;
 import com.example.ecom.common.web.PageParams;
 import com.example.ecom.common.web.PageResponse;
+import com.example.ecom.payment.PaymentAttemptCloser;
 import com.example.ecom.user.User;
 import com.example.ecom.user.UserAccess;
 import org.springframework.data.domain.Page;
@@ -21,13 +22,16 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final CartRepository cartRepository;
+    private final PaymentAttemptCloser paymentAttemptCloser;
     private final UserAccess userAccess;
 
     public OrderService(OrderRepository orderRepository,
                         CartRepository cartRepository,
+                        PaymentAttemptCloser paymentAttemptCloser,
                         UserAccess userAccess) {
         this.orderRepository = orderRepository;
         this.cartRepository = cartRepository;
+        this.paymentAttemptCloser = paymentAttemptCloser;
         this.userAccess = userAccess;
     }
 
@@ -84,6 +88,7 @@ public class OrderService {
                 .orElseThrow(() -> new OrderNotFoundException(orderId));
 
         order.cancel();
+        paymentAttemptCloser.closeOpenAttempt(orderId, "order_cancelled");
         orderRepository.saveAndFlush(order);
 
         return OrderResponse.from(order);

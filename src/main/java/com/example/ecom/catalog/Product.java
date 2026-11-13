@@ -100,4 +100,29 @@ public class Product  extends AuditableEntity {
     public void deactivate() {
         this.active = false;
     }
+
+    /**
+     * Takes stock for a committed reservation. The service has already checked
+     * availability under the row lock; this guard is the second line of defence
+     * so a future caller cannot drive stock negative.
+     */
+    public void reserve(int quantity) {
+        if (quantity < 1) {
+            throw new IllegalArgumentException("Quantity must be at least 1");
+        }
+        if (stockQuantity < quantity) {
+            throw new IllegalStateException(
+                    "Cannot reserve " + quantity + " of " + sku
+                            + "; only " + stockQuantity + " left");
+        }
+        this.stockQuantity -= quantity;
+    }
+
+    /** Returns stock when an attempt fails, is cancelled, or expires. */
+    public void restore(int quantity) {
+        if (quantity < 1) {
+            throw new IllegalArgumentException("Quantity must be at least 1");
+        }
+        this.stockQuantity += quantity;
+    }
 }

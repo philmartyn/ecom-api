@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -34,6 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@ActiveProfiles("test")
 class SecurityPerimeterTest extends AbstractIntegrationTest {
 
     @Autowired
@@ -142,6 +144,36 @@ class SecurityPerimeterTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/api/orders/1/cancel"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.title").value("Unauthorized"));
+    }
+
+    @Test
+    void requiresATokenForEveryPaymentRoute() throws Exception {
+        // Payment attempts are per order, so no payment route is public. The
+        // webhook is the single deliberate exception, tested below.
+        mockMvc.perform(post("/api/orders/1/payments"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(get("/api/orders/1/payments"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+
+        mockMvc.perform(post("/api/orders/1/payments/2/cancel"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Unauthorized"));
+    }
+
+    @Test
+    void leavesThePaymentWebhookPublicButStillRequiresAValidSignature() throws Exception {
+        // A 400 (not a 401) proves the route is outside the JWT perimeter. The
+        // signature is its only gate, so a bodiless unsigned call must not be
+        // treated as authenticated.
+        mockMvc.perform(post("/api/payments/webhook")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(jsonPath("$.title").value("Invalid webhook signature"));
     }
 
     @Test

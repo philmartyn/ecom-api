@@ -1,0 +1,16 @@
+# Test profile for the payment slice.
+#
+# The fake provider keeps tests off the network and off Stripe keys. The sweeper
+# is a bean only when it is enabled; tests that need it opt back in with
+# @SpringBootTest(properties = "app.payments.sweeper.enabled=true"). The webhook
+# secret matches StripeSignatures' test secret, and the publishable key exists
+# so a test can prove the fake provider still returns null.
+app:
+  payments:
+    provider: fake
+    reservation-ttl: 30m
+    sweep-interval: 60s
+    sweeper:
+      enabled: false
+    webhook-secret: whsec_test_secret
+    publishable-key: pk_test_public

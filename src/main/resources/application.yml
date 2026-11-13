@@ -31,3 +31,12 @@ app:
     secret: ${JWT_SECRET:dev-only-secret-change-me-32-bytes-min}
     ttl: 15m
     issuer: https://ecom.local
+  payments:
+    provider: ${PAYMENTS_PROVIDER:fake}
+    reservation-ttl: 30m
+    sweep-interval: 60s
+    sweeper:
+      enabled: true
+    secret-key: ${STRIPE_SECRET_KEY:}
+    publishable-key: ${STRIPE_PUBLISHABLE_KEY:}
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}

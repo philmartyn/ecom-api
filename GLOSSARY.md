@@ -151,3 +151,27 @@ _Avoid_: total (unqualified), grand total, amount
 Ending a PENDING Order before payment, moving it to CANCELLED. It leaves the
 Cart empty and does not change the Order Items.
 _Avoid_: delete, removal, refund (a refund belongs to a Payment)
+
+### Payments
+
+**Payment**:
+The act of settling a PENDING Order through a payment provider. A Payment
+belongs to exactly one Order; it is not Checkout, which only creates the Order.
+_Avoid_: checkout, purchase, transaction
+
+**Payment Attempt**:
+One try at paying an Order through the provider, recorded with its own Payment
+Status. Failed Attempts are retained, so an Order's payment history is complete
+and the shopper can try again.
+_Avoid_: payment, charge, retry
+
+**Payment Status**:
+The lifecycle state of a Payment Attempt, one of `PENDING`, `SUCCEEDED`,
+`FAILED` or `REFUNDED`. It is not the Order Status.
+_Avoid_: order status, payment state
+
+**Reservation**:
+The stock a pending Payment Attempt holds. Creating an Attempt decrements the
+Product's stock; success makes the decrement permanent, while failure,
+cancellation or expiry restores it.
+_Avoid_: lock, hold, allocation

@@ -3,6 +3,7 @@ package com.example.ecom.order;
 import com.example.ecom.catalog.Product;
 import com.example.ecom.common.domain.AuditableEntity;
 import com.example.ecom.common.exception.OrderNotCancellableException;
+import com.example.ecom.common.exception.OrderNotPayableException;
 import com.example.ecom.user.User;
 import jakarta.persistence.*;
 import org.hibernate.annotations.BatchSize;
@@ -123,5 +124,15 @@ public class Order extends AuditableEntity {
 
         this.subtotal = sum;
         this.total = sum;
+    }
+
+    public void markPaid() {
+        if (status == OrderStatus.PAID) {
+            return;
+        }
+        if (status != OrderStatus.PENDING) {
+            throw new OrderNotPayableException(status);
+        }
+        this.status = OrderStatus.PAID;
     }
 }

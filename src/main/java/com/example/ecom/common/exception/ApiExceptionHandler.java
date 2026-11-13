@@ -148,6 +148,61 @@ public class ApiExceptionHandler {
                 "Order cannot be cancelled", "Order cannot be cancelled", request);
     }
 
+    @ExceptionHandler(OrderNotPayableException.class)
+    public ProblemDetail onOrderNotPayable(OrderNotPayableException ex,
+                                           HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT,
+                "Order is not payable", "Order is not payable", request);
+    }
+
+    @ExceptionHandler(PaymentInProgressException.class)
+    public ProblemDetail onPaymentInProgress(PaymentInProgressException ex,
+                                             HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT,
+                "Payment already in progress",
+                "A payment attempt is already open for this order", request);
+    }
+
+    @ExceptionHandler(OrderUnavailableException.class)
+    public ProblemDetail onOrderUnavailable(OrderUnavailableException ex,
+                                            HttpServletRequest request) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT,
+                "Order items are unavailable",
+                "One or more items are unavailable", request);
+        problem.setProperty("unavailableItems", ex.getUnavailableItems());
+        return problem;
+    }
+
+    @ExceptionHandler(PaymentNotFoundException.class)
+    public ProblemDetail onPaymentNotFound(PaymentNotFoundException ex,
+                                           HttpServletRequest request) {
+        return problem(HttpStatus.NOT_FOUND,
+                "Payment not found", "Payment not found", request);
+    }
+
+    @ExceptionHandler(PaymentNotCancellableException.class)
+    public ProblemDetail onPaymentNotCancellable(PaymentNotCancellableException ex,
+                                                 HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT,
+                "Payment cannot be cancelled", "Payment cannot be cancelled", request);
+    }
+
+    @ExceptionHandler(PaymentProviderException.class)
+    public ProblemDetail onPaymentProvider(PaymentProviderException ex,
+                                           HttpServletRequest request) {
+        return problem(HttpStatus.BAD_GATEWAY,
+                "Payment provider unavailable",
+                "The payment provider could not complete the request", request);
+    }
+
+    @ExceptionHandler(InvalidWebhookSignatureException.class)
+    public ProblemDetail onInvalidWebhookSignature(InvalidWebhookSignatureException ex,
+                                                   HttpServletRequest request) {
+        return problem(HttpStatus.BAD_REQUEST,
+                "Invalid webhook signature",
+                "The Stripe-Signature header is missing or invalid", request);
+    }
+
     private ProblemDetail problem(HttpStatus status, String title, String detail,
                                   HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);

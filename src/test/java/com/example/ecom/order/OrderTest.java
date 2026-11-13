@@ -3,6 +3,7 @@ package com.example.ecom.order;
 import com.example.ecom.catalog.Category;
 import com.example.ecom.catalog.Product;
 import com.example.ecom.common.exception.OrderNotCancellableException;
+import com.example.ecom.common.exception.OrderNotPayableException;
 import com.example.ecom.user.Role;
 import com.example.ecom.user.User;
 import org.junit.jupiter.api.Test;
@@ -141,6 +142,40 @@ class OrderTest {
             assertThatThrownBy(order::cancel)
                     .isInstanceOf(OrderNotCancellableException.class)
                     .hasMessageContaining(status.name());
+            assertThat(order.getStatus()).isEqualTo(status);
+        }
+    }
+
+    // --- payment -----------------------------------------------------------
+
+    @Test
+    void markPaidMovesAPendingOrderToPaid() {
+        Order order = new Order(user, shipping);
+
+        order.markPaid();
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAID);
+    }
+
+    @Test
+    void markingAnAlreadyPaidOrderPaidIsIdempotent() {
+        Order order = new Order(user, shipping);
+        order.markPaid();
+
+        order.markPaid();
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAID);
+    }
+
+    @Test
+    void markPaidRejectsAnOrderThatCanNoLongerBePaid() {
+        for (OrderStatus status : List.of(
+                OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.DELIVERED)) {
+            Order order = new Order(user, shipping);
+            ReflectionTestUtils.setField(order, "status", status);
+
+            assertThatThrownBy(order::markPaid)
+                    .isInstanceOf(OrderNotPayableException.class);
             assertThat(order.getStatus()).isEqualTo(status);
         }
     }

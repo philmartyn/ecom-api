@@ -24,7 +24,7 @@ each slice is finished — with tests — before the next one starts.
 | Product browsing and search (`GET /api/products`, `GET /api/categories`) | done |
 | Cart (`GET /api/cart`, add/update/remove items) | done |
 | Orders: checkout, list, detail, cancel | done |
-| Payment (Stripe) | **not started** |
+| Payment (Stripe) | designed (ADR-0005, ADR-0006); not implemented |
 
 Registration, login, health/info, the API docs and the catalog are public; every
 other route requires `Authorization: Bearer <token>`. The public list and the
@@ -351,8 +351,8 @@ code, stored uppercase.
 ```
 
 Stock is checked, not reserved: the order is rejected if any line is inactive
-or short on stock, but no quantity is decremented. The payment slice re-checks
-before charging.
+or short on stock, but no quantity is decremented. Payment will reserve stock
+when it opens an attempt (ADR-0005).
 
 | Failure | Response |
 |---|---|
@@ -479,7 +479,8 @@ price. That is also why a deactivated product can still appear in a cart, marked
 `available: false`.
 
 An order is created `PENDING`; its `order_items` are fixed at that moment, and
-the stock decrement waits for payment (ADR-0004).
+the stock decrement waits for a payment attempt (ADR-0004, refined by
+ADR-0005).
 
 Money is `NUMERIC(12,2)` in the database and `BigDecimal` in Java — never
 `double`. Enums are stored as `VARCHAR` with a `CHECK` constraint and mapped
@@ -563,7 +564,7 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Product browsing and search (`GET /api/products`, `GET /api/categories`)
 - [x] Cart: add, update quantity, remove
 - [x] Checkout and orders: `PENDING` creation, list, detail, cancel (ADR-0004)
-- [ ] **Next:** Stripe payment integration
+- [ ] **Next:** Stripe payment integration (designed: ADR-0005, ADR-0006)
 - [ ] Admin: products, pricing, inventory
 - [ ] Observability stack (Compose profile is written but commented out)
 
@@ -580,7 +581,8 @@ Deliberate for now, listed so nobody mistakes them for oversights:
 - **Cart and checkout stock are not reserved.** Adding a cart line only checks
   stock at that moment, and checkout validates again without decrementing. Two
   shoppers can both hold the last unit and both create `PENDING` orders; the
-  payment slice must re-check and commit the decrement (ADR-0004).
+  payment slice reserves stock when it opens an attempt (ADR-0005), so the
+  second shopper gets a `409` at payment time instead of an oversell.
 - **A retried checkout is not idempotent.** There is no `Idempotency-Key`; a
   retry after a lost response gets `409 "Cart is empty"`. The client recovers
   with `GET /api/orders`. Concurrent duplicates are prevented by the User-row
