@@ -370,6 +370,24 @@ class PaymentIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$[1].failureCode").value("card_declined"));
     }
 
+    @Test
+    void getReturnsOneAttemptWithoutSecretsOrAProviderReference() throws Exception {
+        long orderId = checkout(2);
+        long paymentId = paymentId(createPayment(orderId));
+
+        mockMvc.perform(get("/api/orders/" + orderId + "/payments/" + paymentId)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.id").value(paymentId))
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.amount").value(179.98))
+                .andExpect(jsonPath("$.currency").value("USD"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.publishableKey").doesNotExist())
+                .andExpect(jsonPath("$.providerRef").doesNotExist());
+    }
+
     // --- ownership and unknown resources -----------------------------------
 
     @Test
@@ -386,6 +404,11 @@ class PaymentIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.title").value("Order not found"));
 
         mockMvc.perform(get("/api/orders/" + orderId + "/payments")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(bobToken)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Order not found"));
+
+        mockMvc.perform(get("/api/orders/" + orderId + "/payments/" + paymentId)
                         .header(HttpHeaders.AUTHORIZATION, bearer(bobToken)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.title").value("Order not found"));
@@ -407,6 +430,11 @@ class PaymentIntegrationTest extends AbstractIntegrationTest {
     @Test
     void anUnknownPaymentOnAKnownOrderIs404() throws Exception {
         long orderId = checkout(1);
+
+        mockMvc.perform(get("/api/orders/" + orderId + "/payments/999999")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(token)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Payment not found"));
 
         mockMvc.perform(post("/api/orders/" + orderId + "/payments/999999/cancel")
                         .header(HttpHeaders.AUTHORIZATION, bearer(token)))

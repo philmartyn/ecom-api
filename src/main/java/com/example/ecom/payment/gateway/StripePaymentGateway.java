@@ -9,6 +9,7 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -30,16 +31,30 @@ public class StripePaymentGateway implements PaymentGateway {
     private final StripeClient client;
     private final String publishableKey;
 
+    @Autowired
     public StripePaymentGateway(
             @Value("${app.payments.secret-key:}") String secretKey,
             @Value("${app.payments.publishable-key:}") String publishableKey
     ) {
+        this(newClient(secretKey), publishableKey);
+    }
+
+    private static StripeClient newClient(String secretKey) {
         Assert.hasText(secretKey,
-                "app.payments.secret is required when app.payments.provider=stripe");
+                "app.payments.secret-key is required when app.payments.provider=stripe");
+        return new StripeClient(secretKey);
+    }
+
+    /**
+     * Seam for tests: the SDK client is final and its constructors talk to the
+     * network configuration, so a stubbed client is injected here rather than
+     * built from a key.
+     */
+    StripePaymentGateway(StripeClient client, String publishableKey) {
         Assert.hasText(publishableKey,
                 "app.payments.publishable-key is required when app.payments.provider=stripe");
 
-        this.client = new StripeClient(secretKey);
+        this.client = client;
         this.publishableKey = publishableKey;
     }
 

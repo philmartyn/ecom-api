@@ -58,8 +58,9 @@ The payment slice therefore has to secure stock before the charge.
   provider failure needs a compensating release. That release is idempotent.
 - An abandoned attempt holds stock until the sweeper runs. Clients can release
   it immediately by cancelling the attempt.
-- Multi-instance deployments need `FOR UPDATE SKIP LOCKED` in the sweeper; the
-  single-instance assumption is documented as a known gap.
+- The sweeper reads candidate ids with `FOR UPDATE SKIP LOCKED` and calls the
+  provider outside that transaction, so two replicas take disjoint batches
+  instead of blocking on each other.
 - Stock can disappear between Checkout and payment. The Order exists but cannot
   be paid until stock returns or the shopper cancels it.
 
@@ -71,6 +72,23 @@ The payment slice therefore has to secure stock before the charge.
 - A gateway failure is compensated in a second transaction that marks the
   attempt FAILED and restores stock.
 - The sweeper is a `@Scheduled` component gated by
-  `app.payments.sweeper.enabled`; `@EnableScheduling` lives on the application.
+  `app.payments.sweeper.enabled`; `@EnableScheduling` sits on the sweeper itself,
+  so a disabled sweeper starts no scheduler thread at all.
+- Locks are taken Order → Payment → Products on every path. The Order lock is
+  acquired *before* the Payment row is hydrated: reading the Payment first puts
+  a stale copy in the persistence context, and the later locked read hands that
+  copy back instead of the state the winner committed. `PaymentAttemptCloser`
+  reads only the order id first for this reason.
 - `Order.markPaid()` accepts only PENDING and is idempotent; `Payment` state
   transitions reject anything but PENDING.
+
+## Outcome
+
+Implemented in the `Add payments` slice. The reservation, the compensating
+release, the partial unique indexes and the sweeper all landed as decided. The
+one design correction came from the concurrency suite: the original
+"unlocked probe, then lock" ordering in `PaymentAttemptCloser` let a sweeper
+release and a success webhook settle the same attempt, taking money for stock
+that had already been returned. Reading only the order id before taking the
+Order lock removed the window; the lock order was correct, the read order was
+not.

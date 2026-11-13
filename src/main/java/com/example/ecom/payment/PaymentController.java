@@ -43,6 +43,15 @@ public class PaymentController {
                 currentUserProvider.currentUserId(jwt), orderId));
     }
 
+    @GetMapping("/{orderId}/payments/{paymentId}")
+    public ResponseEntity<PaymentResponse> get(
+            @AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt,
+            @PathVariable long orderId,
+            @PathVariable long paymentId){
+        return NoStore.ok().body(paymentService.get(
+                currentUserProvider.currentUserId(jwt), orderId, paymentId));
+    }
+
     @PostMapping("/{orderId}/payments/{paymentId}/cancel")
     public ResponseEntity<PaymentResponse> cancel(
             @AuthenticationPrincipal(errorOnInvalidType = true) Jwt jwt,

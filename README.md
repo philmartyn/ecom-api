@@ -24,11 +24,12 @@ each slice is finished — with tests — before the next one starts.
 | Product browsing and search (`GET /api/products`, `GET /api/categories`) | done |
 | Cart (`GET /api/cart`, add/update/remove items) | done |
 | Orders: checkout, list, detail, cancel | done |
-| Payment (Stripe) | designed (ADR-0005, ADR-0006); not implemented |
+| Payments: attempts, stock reservation, Stripe webhook, sweeper | done (ADR-0005, ADR-0006) |
 
-Registration, login, health/info, the API docs and the catalog are public; every
-other route requires `Authorization: Bearer <token>`. The public list and the
-401/403 contract are under [Endpoints](#endpoints).
+Registration, login, health/info, the API docs and the catalog are public, plus
+one route that authenticates itself: `POST /api/payments/webhook`. Every other
+route requires `Authorization: Bearer <token>`. The public list and the 401/403
+contract are under [Endpoints](#endpoints).
 
 ## Stack
 
@@ -40,6 +41,7 @@ other route requires `Authorization: Bearer <token>`. The public list and the
 | Database | PostgreSQL 17 (Docker) |
 | Migrations | Flyway — Hibernate runs `ddl-auto: validate` |
 | Auth | Spring Security, OAuth2 resource server, Nimbus JOSE (HS256) |
+| Payments | Stripe PaymentIntents via `stripe-java` 34.1.0, behind a `PaymentGateway` port |
 | Docs | springdoc-openapi 3.1.0 |
 | Tests | JUnit 5, AssertJ, Mockito, Testcontainers |
 
@@ -93,6 +95,10 @@ container.
 | `DB_URL` | `jdbc:postgresql://localhost:5432/ecom` | the application |
 | `DB_USERNAME` / `DB_PASSWORD` | `ecom` | the application |
 | `JWT_SECRET` | `dev-only-secret-change-me-32-bytes-min` | token signing |
+| `PAYMENTS_PROVIDER` | `fake` | which `PaymentGateway` bean exists |
+| `STRIPE_SECRET_KEY` | blank | server-side Stripe calls (`stripe` only) |
+| `STRIPE_PUBLISHABLE_KEY` | blank | returned to the browser on create (`stripe` only) |
+| `STRIPE_WEBHOOK_SECRET` | blank | `Stripe-Signature` verification (`stripe` only) |
 
 `POSTGRES_*` and `DB_*` are deliberately separate: one initialises the database,
 the other connects to it, and in a real deployment they diverge.
@@ -100,6 +106,36 @@ the other connects to it, and in a real deployment they diverge.
 `JWT_SECRET` must be at least 32 bytes of UTF-8 for HS256. The app refuses to
 start otherwise. The committed default exists so the project runs out of the
 box; **set a real secret anywhere but a laptop.**
+
+### Choosing a payment provider
+
+`PAYMENTS_PROVIDER=fake` is the default and needs no keys. The fake is
+deterministic, offline and scriptable, so `bootRun` and the tests never touch
+Stripe. Setting `PAYMENTS_PROVIDER=stripe` fails the context at startup if any
+of the three Stripe variables is blank — a missing key breaks startup, not the
+first customer's payment.
+
+The `com.stripe.*` imports live in exactly one class,
+`StripePaymentGateway`. Everything above the `PaymentGateway` port is identical
+for both providers, which is why the integration suite runs without a network.
+
+Reservation timing is configuration because tests need it short:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `app.payments.reservation-ttl` | `30m` | how long an attempt may hold stock before the sweeper releases it |
+| `app.payments.sweep-interval` | `60s` | delay between sweeper runs |
+| `app.payments.sweeper.enabled` | `true` | whether the sweeper bean and its scheduler exist at all |
+
+To exercise real Stripe locally, run with the three keys set and forward events
+with the Stripe CLI:
+
+```bash
+stripe listen --forward-to localhost:8080/api/payments/webhook
+```
+
+The CLI prints a `whsec_...` secret; use it as `STRIPE_WEBHOOK_SECRET`. Until a
+browser client exists, the CLI plus a test card is the manual end-to-end path.
 
 ## Endpoints
 
@@ -351,8 +387,9 @@ code, stored uppercase.
 ```
 
 Stock is checked, not reserved: the order is rejected if any line is inactive
-or short on stock, but no quantity is decremented. Payment will reserve stock
-when it opens an attempt (ADR-0005).
+or short on stock, but no quantity is decremented. Payment reserves stock when
+it opens an attempt (ADR-0005), so the last unit is decided at payment time, not
+at checkout.
 
 | Failure | Response |
 |---|---|
@@ -413,6 +450,122 @@ All order responses carry `Cache-Control: no-store`. A retried checkout after a
 lost response gets `409 "Cart is empty"`; the client should read
 `GET /api/orders` to find the order that was created.
 
+### Payment endpoints
+
+A Payment Attempt settles one `PENDING` Order. Creating an Attempt **reserves
+stock**: the Order and its Product rows are locked in one transaction, stock is
+re-checked and decremented, the `PENDING` Attempt is committed, and only then is
+the provider called. Success keeps the decrement; failure, cancellation or
+expiry restores it. The reasoning is in
+[ADR-0005](docs/adr/0005-payment-attempts-reserve-stock.md) and
+[ADR-0006](docs/adr/0006-stripe-payment-intents-and-provider-port.md).
+
+Every route re-checks the User row, so a token naming a deleted user is `401`.
+Another user's order is `404`, never `403`: telling a stranger that an order
+exists is an enumeration oracle.
+
+#### `POST /api/orders/{id}/payments`
+
+Requires a token. No request body. Opens an Attempt on the caller's own
+`PENDING` order and returns `201 Created` with
+`Location: /api/orders/{id}/payments/{paymentId}` — the single-attempt read
+below — and `Cache-Control: no-store`:
+
+```json
+{ "id": 1, "status": "PENDING", "amount": 179.98, "currency": "USD",
+  "failureCode": null, "createdAt": "2026-11-13T12:00:00Z",
+  "clientSecret": "pi_..._secret_...", "publishableKey": "pk_test_..." }
+```
+
+`clientSecret` and `publishableKey` appear **only here**: the browser needs them
+to confirm the PaymentIntent with Stripe.js, and the server never sees card
+data. `providerRef` and `provider` are never exposed by any payment route.
+
+A zero-total order reserves stock like any other, then settles itself: `status`
+is `SUCCEEDED`, `clientSecret` and `publishableKey` are `null`, the order is
+`PAID`, and the row is stored with `provider = 'none'` and no provider
+reference.
+
+| Failure | Response |
+|---|---|
+| unknown order id, or another user's order | `404 "Order not found"` |
+| order is not `PENDING` | `409 "Order is not payable"` |
+| an attempt is already open on this order | `409 "Payment already in progress"` |
+| a line is inactive or short on stock | `409 "Order items are unavailable"` with `unavailableItems` |
+| the provider fails | `502 "Payment provider unavailable"`; attempt `FAILED`, stock restored |
+| no token, or a token naming a deleted user | `401` |
+
+The `502` is deliberate: the reservation is compensated before the response, so
+a failed charge never keeps stock. The Attempt row survives as `FAILED`, so the
+history is complete and the shopper can retry.
+
+#### `GET /api/orders/{id}/payments`
+
+Requires a token. Every attempt on the caller's own order, newest first, without
+paging — there are at most a handful per order:
+
+```json
+[ { "id": 2, "status": "PENDING", "amount": 179.98, "currency": "USD",
+    "failureCode": null, "createdAt": "2026-11-13T12:05:00Z" },
+  { "id": 1, "status": "FAILED", "amount": 179.98, "currency": "USD",
+    "failureCode": "card_declined", "createdAt": "2026-11-13T12:00:00Z" } ]
+```
+
+The list never contains `clientSecret`, `publishableKey`, `providerRef` or
+`provider`. An order with no attempts returns `[]`, not `404`.
+
+#### `GET /api/orders/{id}/payments/{paymentId}`
+
+Requires a token. Returns one attempt on the caller's own order — the route the
+create `Location` points at — with the same shape as a list entry and
+`Cache-Control: no-store`. It never carries `clientSecret`, `publishableKey`,
+`providerRef` or `provider`.
+
+An unknown order, another user's order, and a payment id that belongs to a
+different order all return `404`: payment ids are scoped to the order in the
+path, so a valid id from another order is indistinguishable from a missing one.
+
+#### `POST /api/orders/{id}/payments/{paymentId}/cancel`
+
+Requires a token. No request body. Cancels an open attempt, restores the stock
+and returns `200` with the `FAILED` attempt (same shape as a list entry).
+
+It asks the provider first. If the provider reports that the intent already
+succeeded, the attempt is settled instead and the caller gets
+`409 "Payment cannot be cancelled"` — the provider's state decides the race,
+not ours.
+
+| Failure | Response |
+|---|---|
+| unknown order or payment, or not the caller's | `404` |
+| attempt already `SUCCEEDED` | `409 "Payment cannot be cancelled"` |
+| no token, or a token naming a deleted user | `401` |
+
+Cancelling an already-`FAILED` attempt is `200`, not `409`, so a retry is
+harmless. Cancelling the **order** closes any open attempt in the same
+transaction.
+
+#### `POST /api/payments/webhook`
+
+Public and unauthenticated: Stripe cannot present a JWT. The only gate is the
+`Stripe-Signature` header, an HMAC-SHA256 over `timestamp + "." + rawBody` with
+`STRIPE_WEBHOOK_SECRET` and a ±5 minute tolerance. The body is read as a
+`String` because the signature covers the exact bytes Stripe sent; binding it to
+a DTO and re-serialising would break every signature.
+
+| Event | Effect |
+|---|---|
+| `payment_intent.succeeded` | attempt `SUCCEEDED`, order `PAID`, stock stays reserved |
+| `payment_intent.payment_failed` | attempt `FAILED`, stock restored, order stays `PENDING` |
+| `payment_intent.canceled` | attempt `FAILED`, stock restored, order stays `PENDING` |
+| anything else | `200`, ignored — Stripe retries anything that is not `2xx` |
+
+`200` is returned when the event is already applied, when the provider reference
+matches no attempt (with an error log, because that needs a human) and when the
+attempt is already terminal, so a Stripe retry cannot change the outcome. A
+missing, malformed, stale or non-matching signature is
+`400 "Invalid webhook signature"` and nothing is written.
+
 ### Protecting routes
 
 Only these are public:
@@ -425,6 +578,7 @@ Only these are public:
 | `GET /v3/api-docs/**`, `/swagger-ui/**`, `/swagger-ui.html` | API docs |
 | `GET /api/categories` | browsing must work before login |
 | `GET /api/products`, `GET /api/products/{slug}` | public, read-only catalog |
+| `POST /api/payments/webhook` | Stripe cannot present a JWT; the signature is the authentication |
 
 The catalog rules are `GET`-scoped. A `POST /api/products` is not public; it
 falls through to `authenticated()`, which keeps the public surface from growing
@@ -434,8 +588,15 @@ when admin writes arrive.
 to `authenticated()`. There is no per-route rule to forget when another cart
 verb is added: anything not named as public is protected by default.
 
-`/api/orders/**` is likewise absent, so checkout, order reads and cancellation
-all fall through to `authenticated()`. There is no public order route.
+`/api/orders/**` is likewise absent, so checkout, order reads, cancellation and
+every payment attempt route fall through to `authenticated()`. There is no
+public order route.
+
+The webhook is the single deliberate exception, and it is `POST`-scoped: a
+`GET /api/payments/webhook` stays behind `authenticated()`. It is also outside
+the JWT perimeter by design rather than by accident — the verifier would return
+`400`, not `401`, for an unsigned request, and `SecurityPerimeterTest` pins that
+distinction.
 
 Everything else is `authenticated()`. A missing or invalid token gets `401`
 problem+json with a `WWW-Authenticate: Bearer` header; an authenticated caller
@@ -459,7 +620,8 @@ put a secret in one, and only send it over TLS.
 ## Data model
 
 Flyway owns the schema; `V1__initial_schema.sql` is the source of truth and
-Hibernate only validates against it. Applied migrations are never edited.
+`V2__payments_attempts.sql` adds the payment slice's constraints. Hibernate only
+validates against them, and applied migrations are never edited.
 
 | Table | Purpose |
 |---|---|
@@ -470,7 +632,7 @@ Hibernate only validates against it. Applied migrations are never edited.
 | `cart_items` | product, quantity, unique per cart and product |
 | `orders` | one row per checkout; PENDING status, totals, currency, shipping address |
 | `order_items` | **snapshots** of name, unit price and quantity at checkout |
-| `payments` | provider reference, amount, status — unused until Stripe |
+| `payments` | one payment attempt: provider, provider reference, amount, status, failure code |
 
 `order_items` copies rather than references because order history must not
 change when a product is renamed, repriced or deleted. `cart_items` does the
@@ -479,8 +641,24 @@ price. That is also why a deactivated product can still appear in a cart, marked
 `available: false`.
 
 An order is created `PENDING`; its `order_items` are fixed at that moment, and
-the stock decrement waits for a payment attempt (ADR-0004, refined by
+the stock decrement happens when a payment attempt opens (ADR-0004, refined by
 ADR-0005).
+
+Two rules about payment attempts are database rules, not service conventions,
+so no future code path can forget them:
+
+```sql
+-- at most one open attempt per order
+CREATE UNIQUE INDEX payments_order_open_unique
+    ON payments (order_id) WHERE status = 'PENDING';
+
+-- at most one successful attempt per order, however many retries happened
+CREATE UNIQUE INDEX payments_order_succeeded_unique
+    ON payments (order_id) WHERE status = 'SUCCEEDED';
+```
+
+A `FAILED` or `REFUNDED` row falls out of the first index, which is exactly what
+makes "retry after a decline" legal while "two attempts at once" is not.
 
 Money is `NUMERIC(12,2)` in the database and `BigDecimal` in Java — never
 `double`. Enums are stored as `VARCHAR` with a `CHECK` constraint and mapped
@@ -504,8 +682,20 @@ com.example.ecom
 │   └── web/         PageResponse envelope, PageParams bounds, NoStore builder
 ├── dev/             local-only data seeder
 ├── order/           Order aggregate, checkout, order reads, cancellation
+├── payment/         Payment attempts, stock reservation, sweeper, Stripe amounts
+│   ├── gateway/     PaymentGateway port, fake and Stripe adapters
+│   └── webhook/     signature verifier, event mapping, public webhook route
 └── user/            User, Role, repository
 ```
+
+`payment/` is the only package that knows a provider exists. The `gateway/`
+subpackage is the seam: `PaymentGateway` is the port, `FakePaymentGateway` and
+`StripePaymentGateway` are interchangeable adapters, and `StripeAmounts` is the
+one place `BigDecimal` becomes integer minor units.
+
+`webhook/` is separate because it has a different threat model: everything in it
+runs before authentication, on a public route, over bytes that must not be
+re-serialised.
 
 DTOs are records. Entities have no setters — state changes go through
 intention-revealing methods such as `Product.deactivate()` — and no Lombok, so
@@ -514,7 +704,7 @@ what you read is what the compiler sees.
 ## Tests
 
 ```bash
-./gradlew test          # 225 tests, ~35s, needs Docker
+./gradlew test          # 360 tests, ~50s, needs Docker
 ```
 
 The same command runs on GitHub Actions for every push and pull request
@@ -528,26 +718,46 @@ The same command runs on GitHub Actions for every push and pull request
 | unit | `ProductQueryTest` | defaults, bounds, sort whitelist, whitespace normalisation |
 | unit | `CartTest` | accumulation, absolute change, removal, response totals, `available` |
 | unit | `OrderTest` | line snapshots, totals, `totalQuantity`, cancel transitions, shipping normalisation |
+| unit | `PaymentTest` | attempt transitions, one-way provider reference, idempotent success/failure |
+| unit | `StripeAmountsTest` | minor units, rounding, negative amounts, locale-independent currency |
+| unit | `FakePaymentGatewayTest` | the scripted adapter's contract: determinism, one-shot failures |
+| unit | `StripePaymentGatewayTest` | minor units, idempotency key, the status table, cancel fallback, wrapped SDK failures |
+| unit | `StripeWebhookVerifierTest` | real HMAC, timestamp tolerance, several `v1` candidates, ignored events, bad JSON |
 | slice | `AuthControllerTest` | JSON shape, status codes, problem-detail bodies, no hash leaks |
 | slice | `MeEndpointTest` | `/me` contract: `sub` → service id, `UserResponse` body, `no-store`, no hash |
 | slice | `CatalogControllerTest` | envelope, summary vs detail shape, 400s for bad paging and sort |
 | slice | `CartControllerTest` | the four routes, full-cart responses, 400/404/409 bodies, `no-store` |
 | slice | `OrderControllerTest` | checkout/list/detail/cancel, `Location`, `no-store`, 400/404/409 bodies, no inventory leaks |
-| slice | `SecurityPerimeterTest` | public allowlist (including catalog GETs), cart and order routes require a token, 401 vs 403, unknown routes never leak 404 |
+| slice | `PaymentControllerTest` | create/list/get/cancel, `201` + `Location`, `clientSecret` only on create, no `providerRef` |
+| slice | `PaymentWebhookControllerTest` | raw body survives verification, 200 for duplicates and unknown refs, 400 for a bad signature |
+| slice | `SecurityPerimeterTest` | public allowlist (catalog GETs, the webhook POST), cart and order routes require a token, 401 vs 403 |
 | repository | `UserRepositoryTest`, `CatalogRepositoryTest`, `DevDataSeederTest` | constraints, idempotent seeding |
 | repository | `CartRepositoryTest` | `NOT NULL` columns, cascade and orphan removal, entity graph, line order |
 | repository | `PessimisticLockTest` | a cart mutation blocks a second `FOR UPDATE`; plain reads are not blocked |
 | repository | `OrderRepositoryTest` | constraints, cascade, entity graph, owner scoping, `FOR UPDATE` lookup |
+| repository | `PaymentRepositoryTest` | partial unique indexes, one-succeeded rule, cascade from an order, the sweeper query, provider-ref uniqueness |
 | integration | `AuthRegistrationIntegrationTest`, `AuthLoginIntegrationTest` | the whole chain against real PostgreSQL |
 | integration | `TokenValidationIntegrationTest` | valid login token accepted; tampered, expired, wrong-secret, wrong-issuer, unknown-role, bad-subject and deleted-user tokens rejected |
 | integration | `CatalogIntegrationTest` | search escaping, category filter, active-only visibility, paging past the end |
 | integration | `CartIntegrationTest` | lazy creation, accumulate vs absolute, idempotent delete, stock `409`, deactivated lines stay visible, current prices, ordering |
 | integration | `OrderIntegrationTest` | checkout, empty/unavailable `409`, cart clearing, owner-only reads, cancel transitions, deleted-user `401` |
 | integration | `OrderConcurrencyTest` | one order from two concurrent checkouts; two concurrent cancels both succeed |
+| integration | `PaymentIntegrationTest` | reserve on create, provider failure compensating, webhook outcomes, zero-total settle, single read, ownership, retry after failure, cancel idempotence |
+| integration | `PaymentConcurrencyTest` | one open attempt, last unit reserved once, sweeper vs success webhook, cancel vs success |
+| integration | `PaymentSweeperTest` | expiry releases once, fresh and processing attempts are left alone, a succeeded intent is settled, an unreachable provider is retried |
 
 The order slice (ADR-0004) is covered by `OrderTest`, `OrderControllerTest`,
 `OrderRepositoryTest`, `OrderIntegrationTest` and `OrderConcurrencyTest`, and
 `SecurityPerimeterTest` now includes `/api/orders/**`.
+
+The payment slice (ADR-0005, ADR-0006) adds `PaymentTest`, `StripeAmountsTest`,
+`FakePaymentGatewayTest`, `StripeWebhookVerifierTest`, `StripePaymentGatewayTest`,
+`PaymentControllerTest`, `PaymentWebhookControllerTest`, `PaymentRepositoryTest`,
+`PaymentIntegrationTest`, `PaymentConcurrencyTest` and `PaymentSweeperTest`.
+Nothing in the suite talks to Stripe: the fake adapter is the default unit of
+work, `StripePaymentGatewayTest` stubs the SDK client to cover the adapter's
+amount, idempotency and status translation, and webhook tests sign their own
+payloads with `StripeSignatures.header(secret, payload, timestamp)`.
 
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
@@ -564,8 +774,8 @@ than one per class. Migrations run against it exactly as they do in production.
 - [x] Product browsing and search (`GET /api/products`, `GET /api/categories`)
 - [x] Cart: add, update quantity, remove
 - [x] Checkout and orders: `PENDING` creation, list, detail, cancel (ADR-0004)
-- [ ] **Next:** Stripe payment integration (designed: ADR-0005, ADR-0006)
-- [ ] Admin: products, pricing, inventory
+- [x] Payments: attempts with stock reservation, Stripe PaymentIntents, webhook, sweeper (ADR-0005, ADR-0006)
+- [ ] **Next:** Admin: products, pricing, inventory
 - [ ] Observability stack (Compose profile is written but commented out)
 
 ## Known gaps
@@ -576,22 +786,50 @@ Deliberate for now, listed so nobody mistakes them for oversights:
   claim, so a demoted admin keeps the old role until that token expires. `/me`
   reads the database, but ordinary protected routes do not.
 - **A deleted user's token still works** on routes that trust claims alone.
-  `/me`, every cart route and every order route re-check the database, so they
-  return `401`; the rest do not. The admin slice should revisit this globally.
-- **Cart and checkout stock are not reserved.** Adding a cart line only checks
-  stock at that moment, and checkout validates again without decrementing. Two
-  shoppers can both hold the last unit and both create `PENDING` orders; the
-  payment slice reserves stock when it opens an attempt (ADR-0005), so the
-  second shopper gets a `409` at payment time instead of an oversell.
+  `/me`, every cart route, every order route and every payment route re-check
+  the database, so they return `401`; the rest do not. The admin slice should
+  revisit this globally.
+- **Cart and checkout still do not reserve stock.** Adding a cart line only
+  checks stock at that moment, and checkout validates again without
+  decrementing. Two shoppers can both hold the last unit and both create
+  `PENDING` orders; stock is only secured when one of them opens a payment
+  attempt (ADR-0005), so the second gets a `409` at payment time instead of an
+  oversell.
 - **A retried checkout is not idempotent.** There is no `Idempotency-Key`; a
   retry after a lost response gets `409 "Cart is empty"`. The client recovers
   with `GET /api/orders`. Concurrent duplicates are prevented by the User-row
   lock.
-- **`PENDING` orders do not expire.** They hold no stock, so the cost is history
-  clutter; an expiry rule belongs with payments.
+- **`PENDING` orders do not expire.** The order holds nothing by itself; only an
+  open payment attempt holds stock, and that expires after 30 minutes. An
+  abandoned order is history clutter, not an inventory problem.
 - **Cancelling does not restore the cart.** The order keeps the lines; "buy
   again" is a client concern.
 - **No admin order access.** Orders are owner-only until the admin slice.
+- **A success that arrives after the release is not recovered.** If the sweeper
+  or an explicit cancel releases an attempt and Stripe reports success
+  afterwards, the attempt is already `FAILED`, so `settle` logs an error and
+  leaves the order `PENDING`. Money is taken without an order and a human has to
+  intervene. The alternative — marking a released order paid — would oversell,
+  so this waits for a refunds slice.
+- **No refunds or disputes.** `REFUNDED` exists in the enum and the database
+  `CHECK` but nothing sets it. Refunds, partial captures and disputes are out of
+  scope.
+- **No saved payment methods.** Every attempt creates a fresh PaymentIntent and
+  needs a client to confirm it; there are no off-session charges.
+- **No client to confirm an intent.** The create response is shaped for
+  Stripe.js, but until a frontend exists the Stripe CLI is the only end-to-end
+  path. `clientSecret` is useless without it.
+- **The webhook keeps no event log.** Idempotency is derived from attempt state,
+  so a replay is harmless, but there is no `event.id` row to prove what Stripe
+  sent and no replay tooling.
+- **One webhook secret, no rotation window.** The verifier accepts several `v1`
+  signatures, which is what makes Stripe's dual-signing rotation work, but the
+  secret itself is a single environment variable.
+- **The webhook trusts the signed payload's contents.** The amount and currency
+  in the event are not compared with the attempt; the signature is the only
+  guarantee, and Stripe is assumed to be telling the truth about its own intent.
+- **Payments are invisible to admins.** No admin list, no revenue reporting, no
+  way to force-settle a stuck attempt.
 - **Order totals have no shipping or tax.** `total` equals `subtotal`; adding
   either needs new columns and a calculation.
 - **Order lines have no slug or image snapshot.** The detail returns `productId`

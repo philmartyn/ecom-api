@@ -32,9 +32,12 @@ testable without network access or Stripe keys in CI.
   recovered from the attempts list, and the one-open-attempt rule prevents a
   duplicate hold. The Stripe call carries
   `Idempotency-Key: payment-{paymentId}`.
-- The Stripe API version is pinned in the adapter. `app.payments.provider`
-  defaults to `fake`; `stripe` fails fast when the secret key or webhook secret
-  is blank.
+- The Stripe API version is whatever `stripe-java` 34.1.0 pins; the adapter does
+  not override it. Upgrading the SDK is a deliberate, reviewed API-version
+  change, not a side effect.
+- `app.payments.provider` defaults to `fake`. Selecting `stripe` fails fast at
+  startup when the secret key, publishable key or webhook secret is blank, so a
+  missing key breaks the deploy rather than the first customer's payment.
 - Payment Status is separate from Order Status: only a `SUCCEEDED` attempt moves
   a PENDING Order to PAID. Refunds are out of scope; `REFUNDED` stays unused.
 
@@ -66,11 +69,34 @@ testable without network access or Stripe keys in CI.
 
 ## Spring notes
 
-- `stripe-java` is a new dependency. A `StripeClient` bean is configured from
-  properties; `StripePaymentGateway` implements the port and owns all SDK types.
+- `stripe-java` is a new dependency. `StripePaymentGateway` constructs one
+  `StripeClient` from the secret key in its constructor — it is thread-safe, and
+  the bean only exists when `app.payments.provider=stripe`.
 - The webhook controller takes `@RequestBody String` and
   `@RequestHeader("Stripe-Signature")` so verification sees the raw bytes.
 - `SecurityConfig` permits `POST /api/payments/webhook` before the catch-all.
 - `PaymentResponse` exposes `failureCode` but never `providerRef`.
 - Tests use `FakePaymentGateway`; webhook tests build a real signature with a
   local `whsec_` secret.
+- `StripePaymentGateway` has a package-private constructor taking a
+  `StripeClient`; the public `@Value` constructor builds the real client. That
+  seam lets the adapter be tested with a stubbed SDK client, without a key or a
+  network.
+- `cancel` falls back to `retrieve` on `InvalidRequestException`, because Stripe
+  refuses to cancel an intent that already succeeded. The service then settles
+  the attempt instead of answering `502` for a payment that went through.
+- Stripe has no `failed` status: `requires_payment_method` plus a
+  `last_payment_error` maps to FAILED, and an unknown future status maps to
+  PROCESSING so the sweeper retries rather than closing a live payment.
+
+## Outcome
+
+Implemented in the `Add payments` slice: PaymentIntents behind the port, the
+public webhook, and the sweeper as reconciliation. The fake provider is the
+default everywhere, so CI needs no Stripe keys. `StripePaymentGateway` is
+covered by `StripePaymentGatewayTest` against a stubbed `StripeClient`, which
+pins the translation layer — minor units, idempotency key, status mapping,
+cancel fallback — without a network call; a live Stripe call is still only
+exercised by hand with the Stripe CLI. The remaining limitation is scope, not
+architecture: no refunds, so a success that arrives after a released
+reservation has to be reconciled by hand (see the README's known gaps).

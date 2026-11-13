@@ -81,6 +81,15 @@ public class PaymentService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public PaymentResponse get(long userId, long orderId, long paymentId) {
+        requireOwnedOrder(userId, orderId);
+
+        return paymentRepository.findByIdAndOrderId(paymentId, orderId)
+                .map(PaymentResponse::from)
+                .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+    }
+
     public PaymentResponse cancel(long userId, long orderId, long paymentId) {
         requireOwnedOrder(userId, orderId);
 

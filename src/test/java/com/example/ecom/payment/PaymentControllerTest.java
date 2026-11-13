@@ -49,8 +49,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>
  * The contract pinned here is deliberately narrow: create is {@code 201} with a
  * {@code Location} and the only appearance of {@code clientSecret} and
- * {@code publishableKey}; list is an unpaginated array with neither secret nor
- * {@code providerRef}; every response is {@code Cache-Control: no-store}; and
+ * {@code publishableKey}; list and get are unpaginated reads with neither secret
+ * nor {@code providerRef}; every response is {@code Cache-Control: no-store}; and
  * state conflicts are {@code 409}, provider failures are {@code 502}, and
  * anything the caller does not own is {@code 404}.
  */
@@ -218,6 +218,53 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.title").value("Order not found"));
     }
 
+    // --- get -----------------------------------------------------------------
+
+    @Test
+    void getReturnsTheAttemptWithoutSecretsOrAProviderReference() throws Exception {
+        authenticate();
+        given(paymentService.get(USER_ID, ORDER_ID, PAYMENT_ID))
+                .willReturn(response(PaymentStatus.PENDING, null));
+
+        mockMvc.perform(get("/api/orders/7/payments/11"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.id").value((int) PAYMENT_ID))
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.amount").value(179.98))
+                .andExpect(jsonPath("$.currency").value("USD"))
+                .andExpect(jsonPath("$.failureCode").value(nullValue()))
+                .andExpect(jsonPath("$.createdAt").value("2026-11-09T12:00:00Z"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.publishableKey").doesNotExist())
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andExpect(jsonPath("$.providerRef").doesNotExist());
+
+        then(paymentService).should().get(USER_ID, ORDER_ID, PAYMENT_ID);
+    }
+
+    @Test
+    void getMapsAMissingOrForeignPaymentTo404() throws Exception {
+        authenticate();
+        willThrow(new PaymentNotFoundException(PAYMENT_ID))
+                .given(paymentService).get(USER_ID, ORDER_ID, PAYMENT_ID);
+
+        mockMvc.perform(get("/api/orders/7/payments/11"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Payment not found"));
+    }
+
+    @Test
+    void getMapsAnUnknownOrForeignOrderTo404() throws Exception {
+        authenticate();
+        willThrow(new OrderNotFoundException(ORDER_ID))
+                .given(paymentService).get(USER_ID, ORDER_ID, PAYMENT_ID);
+
+        mockMvc.perform(get("/api/orders/7/payments/11"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Order not found"));
+    }
+
     // --- cancel -------------------------------------------------------------
 
     @Test
@@ -280,11 +327,15 @@ class PaymentControllerTest {
         willThrow(new UserNotFoundException(USER_ID))
                 .given(paymentService).list(USER_ID, ORDER_ID);
         willThrow(new UserNotFoundException(USER_ID))
+                .given(paymentService).get(USER_ID, ORDER_ID, PAYMENT_ID);
+        willThrow(new UserNotFoundException(USER_ID))
                 .given(paymentService).cancel(USER_ID, ORDER_ID, PAYMENT_ID);
 
         mockMvc.perform(post("/api/orders/7/payments"))
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/orders/7/payments"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/orders/7/payments/11"))
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(post("/api/orders/7/payments/11/cancel"))
                 .andExpect(status().isUnauthorized());

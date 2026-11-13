@@ -162,7 +162,8 @@ _Avoid_: checkout, purchase, transaction
 **Payment Attempt**:
 One try at paying an Order through the provider, recorded with its own Payment
 Status. Failed Attempts are retained, so an Order's payment history is complete
-and the shopper can try again.
+and the shopper can try again. In code this is the `Payment` entity and the
+`payments` table.
 _Avoid_: payment, charge, retry
 
 **Payment Status**:
@@ -175,3 +176,71 @@ The stock a pending Payment Attempt holds. Creating an Attempt decrements the
 Product's stock; success makes the decrement permanent, while failure,
 cancellation or expiry restores it.
 _Avoid_: lock, hold, allocation
+
+**Provider**:
+The external service that moves the money for a Payment Attempt, chosen per
+deployment by `app.payments.provider`: `fake` (in-process, deterministic, the
+default) or `stripe`. Every call goes through the Payment Gateway, so nothing
+above it knows which one is in use.
+_Avoid_: gateway (that is our port), processor, PSP, Stripe (that is one provider)
+
+**Payment Gateway**:
+The port between the payment domain and whichever Provider is configured.
+`FakePaymentGateway` and `StripePaymentGateway` implement the same four calls,
+which is what lets the whole suite run without a network. Only the Stripe
+adapter imports `com.stripe.*`.
+_Avoid_: client, Stripe client, provider
+
+**Provider Reference**:
+The Provider's own identifier for an Attempt, such as a Stripe PaymentIntent id.
+It is stored on the Attempt and never exposed by the API.
+_Avoid_: intent id, charge id, transaction id
+
+**Client Secret**:
+The short-lived credential a browser needs to confirm a PaymentIntent directly
+with the Provider. It appears only in the create response, never in a read.
+_Avoid_: token (that is the JWT), publishable key (that identifies the account,
+not the payment)
+
+**One open Attempt**:
+The rule that an Order has at most one `PENDING` Attempt, enforced by a partial
+unique index rather than a service check. A second create is `409`, a retry
+after failure is allowed, and at most one Attempt per Order can ever be
+`SUCCEEDED`.
+_Avoid_: payment lock, singleton payment
+
+**Reservation Expiry**:
+The point, 30 minutes after an Attempt opens, when its hold on stock is stale.
+The Sweeper then asks the Provider what actually happened instead of assuming
+failure.
+_Avoid_: timeout, abandonment, TTL (that is the configured duration)
+
+**Sweeper**:
+The scheduled job that finds expired `PENDING` Attempts, releases their stock,
+and settles any that the Provider reports as already succeeded. It is both the
+expiry mechanism and the reconciliation backstop for a lost Webhook.
+_Avoid_: cron, reaper, cleanup job
+
+**Reconciliation**:
+Comparing our Attempt with the Provider's state and letting the Provider win.
+That is why the Sweeper settles an expired Attempt whose intent succeeded
+instead of releasing it.
+_Avoid_: sync, correction
+
+**Webhook**:
+The Provider's asynchronous notification, `POST /api/payments/webhook`. Public
+but authenticated by its signature; the primary writer of `PAID`, with the
+Sweeper as the backstop.
+_Avoid_: callback, hook
+
+**Webhook Signature**:
+HMAC-SHA256 over `timestamp + "." + rawBody` with the webhook secret, sent as
+`t=...,v1=...`. The timestamp is inside the signed string and has a ±5 minute
+tolerance, which is what stops a captured request being replayed later.
+_Avoid_: hash, checksum
+
+**Zero-total Payment**:
+The settlement of an Order whose total is `0`: stock is reserved like any other
+Attempt, but there is nothing to charge, so the Attempt succeeds locally with
+`provider = 'none'`, no Provider Reference and no Client Secret.
+_Avoid_: free order, comp, no-op payment
