@@ -1,0 +1,9 @@
+# The image only needs the executable jar. Keeping the rest out of the context
+# makes the build fast; build/libs is excluded except for the jar itself.
+.git
+.gradle
+.idea
+build/*
+!build/libs/
+!build/libs/app.jar
+*.iml
