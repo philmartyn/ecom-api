@@ -49,3 +49,9 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// The Dockerfile copies this one name, so the image build never has to guess
+// between the executable jar and the -plain.jar Gradle also writes.
+tasks.named('bootJar') {
+    archiveFileName = 'app.jar'
+}

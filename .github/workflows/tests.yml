@@ -73,3 +73,90 @@ jobs:
             build/reports/tests/test
             build/test-results/test
           retention-days: 7
+
+      # --- container smoke test ---------------------------------------------
+      # The JVM tests prove the logic; this proves the deployable artifact
+      # starts, migrates the schema and serves real traffic. The jar is built
+      # once and copied into the image, so Docker never runs Gradle itself.
+      - name: Build the application jar
+        run: ./gradlew bootJar --console=plain
+
+      - name: Build the test image
+        run: docker build -t ecom-api:test .
+
+      - name: Start PostgreSQL for the smoke test
+        run: |
+          docker network create ecom-smoke
+          docker run -d --name ecom-smoke-db --network ecom-smoke \
+            -e POSTGRES_DB=ecom \
+            -e POSTGRES_USER=ecom \
+            -e POSTGRES_PASSWORD=ecom \
+            postgres:17-alpine
+
+          for attempt in $(seq 1 30); do
+            if docker exec ecom-smoke-db pg_isready -U ecom -d ecom > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "PostgreSQL did not become ready" >&2
+          exit 1
+
+      - name: Start the application image
+        run: |
+          docker run -d --name ecom-smoke-app --network ecom-smoke -p 8080:8080 \
+            -e DB_URL=jdbc:postgresql://ecom-smoke-db:5432/ecom \
+            -e DB_USERNAME=ecom \
+            -e DB_PASSWORD=ecom \
+            -e JWT_SECRET=ci-only-secret-at-least-32-bytes-long \
+            ecom-api:test
+
+      - name: Wait for the image to become healthy
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | grep -q '"status":"UP"'; then
+              echo "Image healthy after $((attempt * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Image did not become healthy" >&2
+          docker logs ecom-smoke-app
+          exit 1
+
+      # Proves the parts unit tests cannot: Flyway runs inside the container,
+      # the HTTP stack serves the migrated schema, and register → login → /me
+      # exercises writes, BCrypt and JWT signing end to end.
+      - name: Smoke test the image
+        run: |
+          curl -fsS 'http://localhost:8080/api/products?size=1' > /dev/null
+
+          email="smoke-$(date +%s)@example.com"
+          curl -fsS -X POST http://localhost:8080/api/auth/register \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$email\",\"password\":\"password123\",\"firstName\":\"Smoke\",\"lastName\":\"Test\"}" \
+            > /dev/null
+
+          token=$(curl -fsS -X POST http://localhost:8080/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$email\",\"password\":\"password123\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["accessToken"])')
+
+          curl -fsS http://localhost:8080/api/auth/me \
+            -H "Authorization: Bearer $token" > /dev/null
+
+          # V2 must have applied, otherwise Hibernate validation would have
+          # stopped the context and the health check would already have failed.
+          docker exec ecom-smoke-db psql -U ecom -d ecom -tAc \
+            "select version from flyway_schema_history where success order by installed_rank" \
+            | grep -qx 2
+
+      - name: Stop the smoke-test containers
+        if: always()
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            docker logs ecom-smoke-app || true
+          fi
+          docker rm -f ecom-smoke-app ecom-smoke-db || true
+          docker network rm ecom-smoke || true
+

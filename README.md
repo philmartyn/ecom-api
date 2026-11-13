@@ -39,6 +39,7 @@ contract are under [Endpoints](#endpoints).
 | Spring Boot | 4.1.2 |
 | Build | Gradle 9.8.2 (wrapper committed) |
 | Database | PostgreSQL 17 (Docker) |
+| Container | `eclipse-temurin:27-jre` runtime around `build/libs/app.jar` |
 | Migrations | Flyway — Hibernate runs `ddl-auto: validate` |
 | Auth | Spring Security, OAuth2 resource server, Nimbus JOSE (HS256) |
 | Payments | Stripe PaymentIntents via `stripe-java` 34.1.0, behind a `PaymentGateway` port |
@@ -86,6 +87,29 @@ docker compose down -v && docker compose up -d
 
 In IntelliJ, run `EComApplication` directly; the defaults already point at the
 container.
+
+### Container image
+
+The image is a thin runtime around the jar, so Gradle builds the jar first:
+
+```bash
+./gradlew bootJar                       # writes build/libs/app.jar
+docker build -t ecom-api:test .
+docker run --rm -p 8080:8080 \
+  -e DB_URL=jdbc:postgresql://host.docker.internal:5432/ecom \
+  -e DB_USERNAME=ecom -e DB_PASSWORD=ecom \
+  ecom-api:test
+```
+
+On Linux, `host.docker.internal` needs
+`--add-host=host.docker.internal:host-gateway`; alternatively put the app and
+the Postgres container on the same Docker network and use its service name.
+Flyway migrates on startup exactly as it does for `bootRun`, so the image can
+start against an empty database.
+
+CI builds this image after the suite and smoke-tests it against a disposable
+Postgres: `/actuator/health`, a public product read, register → login → `/me`,
+and a check that `flyway_schema_history` reached V2.
 
 ## Configuration
 
@@ -762,6 +786,11 @@ payloads with `StripeSignatures.header(secret, payload, timestamp)`.
 Database tests use Testcontainers with a **singleton container**: one PostgreSQL
 starts for the whole run and is shared through `AbstractIntegrationTest`, rather
 than one per class. Migrations run against it exactly as they do in production.
+
+After the suite, the workflow builds the runtime image and smoke-tests the
+container against a disposable PostgreSQL: health, a public product read,
+register → login → `/me`, and the Flyway history check. A broken Dockerfile, a
+missing runtime image or an unapplied migration fails CI.
 
 ## Roadmap
 
